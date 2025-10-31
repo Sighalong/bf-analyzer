@@ -372,7 +372,7 @@ def collect_product_links_from_category(page, category_name, max_links=30):
     return list(product_links)
 
 def extract_product(page, url) -> ProductResult:
-      page.goto(url, wait_until="load", timeout=30000)
+    page.goto(url, wait_until="load", timeout=30000)
     time.sleep(1.0)
     accept_cookies(page)
     try:
@@ -381,8 +381,10 @@ def extract_product(page, url) -> ProductResult:
         pass
 
     # Trigge lazy-load
-    page.mouse.wheel(0, 800); time.sleep(0.4)
-    page.mouse.wheel(0, 1200); time.sleep(0.5)
+    page.mouse.wheel(0, 800)
+    time.sleep(0.4)
+    page.mouse.wheel(0, 1200)
+    time.sleep(0.5)
 
     # 🔓 Åpne prishistorikk/prisstatistikk før vi leser tekst
     try:
@@ -405,8 +407,10 @@ def extract_product(page, url) -> ProductResult:
         pass
 
     # Litt ekstra scroll for å sikre rendering av tekst
-    page.mouse.wheel(0, 1000); time.sleep(0.4)
-    page.mouse.wheel(0, 1400); time.sleep(0.4)
+    page.mouse.wheel(0, 1000)
+    time.sleep(0.4)
+    page.mouse.wheel(0, 1400)
+    time.sleep(0.4)
 
     title = get_title(page)
     text = extract_text(page)
