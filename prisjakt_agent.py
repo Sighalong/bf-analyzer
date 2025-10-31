@@ -191,18 +191,22 @@ def get_title(page):
 
 def accept_cookies(page):
     selectors = [
-        "button:has-text('Godta')",
-        "button:has-text('Aksepter alle')",
+        # OneTrust/standard
         "[data-testid='onetrust-accept-btn-handler']",
         "#onetrust-accept-btn-handler",
+        "button:has-text('Godta')",
+        "button:has-text('Aksepter alle')",
+        "button:has-text('Jeg forstår')",
+        "button:has-text('OK')",
+        # Engelsk fallback
         "button:has-text('Accept all')",
-        "button:has-text('OK')"
+        "button:has-text('I understand')",
     ]
     for sel in selectors:
         try:
             loc = page.locator(sel).first
             if loc.is_visible():
-                loc.click(timeout=1000)
+                loc.click(timeout=1200)
                 time.sleep(0.4)
                 break
         except Exception:
@@ -220,14 +224,36 @@ def collect_product_links_from_search(page, keyword, max_links=30):
             page.goto(su, wait_until="load", timeout=30000)
             time.sleep(1.0)
             accept_cookies(page)
-            # vent til ro
             try:
                 page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
                 pass
 
-            # Scroll & samle i flere runder
-            for _ in range(18):  # dypere scroll
+            # Forsøk å klikke fanen "Produkter"
+            try:
+                tab = page.get_by_role("tab", name=re.compile(r"Produkter", re.I))
+                if tab.is_visible():
+                    tab.click(timeout=1200)
+                    time.sleep(0.6)
+            except Exception:
+                # fallback: søk etter knapp/lenke med tekst
+                try:
+                    page.locator("a:has-text('Produkter'), button:has-text('Produkter')").first.click(timeout=1200)
+                    time.sleep(0.6)
+                except Exception:
+                    pass
+
+            # Klikk "Vis mer" noen ganger hvis den finnes
+            for _ in range(8):
+                try:
+                    show_more = page.locator("button:has-text('Vis mer'), a:has-text('Vis mer')")
+                    if show_more.first.is_visible():
+                        show_more.first.click(timeout=1200)
+                        time.sleep(0.6)
+                        continue
+                except Exception:
+                    pass
+                # Scroll for å trigge lazy load
                 page.mouse.wheel(0, 1600)
                 time.sleep(0.35)
 
@@ -237,7 +263,6 @@ def collect_product_links_from_search(page, keyword, max_links=30):
                     hrefs = anchors.evaluate_all("(els) => els.map(e => e.getAttribute('href'))")
                 except Exception:
                     hrefs = []
-
                 for h in hrefs:
                     if not h:
                         continue
@@ -248,7 +273,7 @@ def collect_product_links_from_search(page, keyword, max_links=30):
                         if len(product_links) >= max_links:
                             return list(product_links)
 
-                # 2) fra rå HTML (noen sider har data i innholdet uten klikkbare <a>)
+                # 2) fra rå HTML
                 try:
                     html = page.content()
                 except Exception:
@@ -256,19 +281,17 @@ def collect_product_links_from_search(page, keyword, max_links=30):
                 for m in re.finditer(r"https?://www\.prisjakt\.no/product\.php\?p=\d+", html):
                     product_links.add(m.group(0))
                     if len(product_links) >= max_links:
+                            if not product_links:
+    open("/app/outputs/debug_search.html", "w", encoding="utf-8").write(html)
                         return list(product_links)
-
-                if len(product_links) >= max_links:
-                    break
 
             if len(product_links) >= max_links:
                 break
-
         except Exception:
-            # prøv neste søk-URL
             continue
 
     return list(product_links)
+
 
 def collect_product_links_from_category(page, category_name, max_links=30):
     key = norm_key(category_name)
