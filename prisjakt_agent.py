@@ -164,45 +164,79 @@ def get_title(page):
     except Exception:
         return ""
 
-def collect_product_links_from_search(page, keyword, max_links=30):
-    # Navigate to home, use site search, then collect product links on results
-    page.goto("https://www.prisjakt.no/", wait_until="domcontentloaded", timeout=25000)
-    smart_wait(page, 1.0)
-    # Find any input that looks like search
-    candidates = page.locator("input[type='search'], input[placeholder*='Søk'], input[placeholder*='søk'], input[aria-label*='Søk']")
-    if candidates.count() == 0:
-        # Try generic input
-        candidates = page.locator("input")
-    if candidates.count() == 0:
-        return []
-    box = candidates.nth(0)
-    box.click()
-    box.fill(keyword)
-    box.press("Enter")
-    try:
-        page.wait_for_url(re.compile(r".*search.*|.*sok.*|.*resultat.*", re.I), timeout=10000)
-    except PlaywrightTimeoutError:
-        smart_wait(page, 2.0)
-    smart_wait(page, 1.5)
+def accept_cookies(page):
+    # forsøk flere vanlige varianter
+    selectors = [
+        "button:has-text('Godta')",
+        "button:has-text('Aksepter alle')",
+        "[data-testid='onetrust-accept-btn-handler']",
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept all')",
+    ]
+    for sel in selectors:
+        try:
+            if page.locator(sel).first.is_visible():
+                page.locator(sel).first.click(timeout=1000)
+                time.sleep(0.5)
+                break
+        except Exception:
+            pass
 
-    # scroll to load more
+def collect_product_links_from_search(page, keyword, max_links=30):
+    # Gå direkte til søk
+    search_urls = [
+        f"https://www.prisjakt.no/search?q={quote_plus(keyword)}",
+        f"https://www.prisjakt.no/?q={quote_plus(keyword)}",  # fallback
+    ]
     product_links = set()
-    for _ in range(6):
-        # collect anchors
-        anchors = page.locator("a[href*='product.php?p=']")
-        hrefs = anchors.evaluate_all("(els) => els.map(e => e.getAttribute('href'))")
-        for h in hrefs:
-            if not h: continue
-            if h.startswith("/"):
-                h = "https://www.prisjakt.no" + h
-            if PRODUCT_URL_RE.match(h):
-                product_links.add(h)
+
+    for su in search_urls:
+        try:
+            page.goto(su, wait_until="load", timeout=30000)
+            time.sleep(1.0)
+            accept_cookies(page)
+            # Litt forsiktig skrolling for å trigger lazy load
+            for _ in range(10):
+                page.mouse.wheel(0, 1600)
+                time.sleep(0.4)
+                # Strategi 1: direkte 'product.php?p='
+                anchors = page.locator("a[href*='product.php?p=']")
+                hrefs = anchors.evaluate_all("(els) => els.map(e => e.getAttribute('href'))")
+                for h in hrefs:
+                    if not h: 
+                        continue
+                    if h.startswith("/"):
+                        h = "https://www.prisjakt.no" + h
+                    if PRODUCT_URL_RE.match(h):
+                        product_links.add(h)
+                        if len(product_links) >= max_links:
+                            return list(product_links)
+                # Strategi 2: klikk inn på produktkort hvis søk viser kort som ikke har direkte href
+                # (dette er best-effort; skipper om ikke synlig)
+                try:
+                    cards = page.locator("a:has([data-testid*='product'])")
+                    chrefs = cards.evaluate_all("(els) => els.map(e => e.getAttribute('href'))")
+                    for h in chrefs:
+                        if not h: 
+                            continue
+                        if h.startswith("/"):
+                            h = "https://www.prisjakt.no" + h
+                        if PRODUCT_URL_RE.match(h):
+                            product_links.add(h)
+                            if len(product_links) >= max_links:
+                                return list(product_links)
+                except Exception:
+                    pass
+
                 if len(product_links) >= max_links:
                     break
-        if len(product_links) >= max_links:
-            break
-        page.mouse.wheel(0, 1800)
-        smart_wait(page, 0.6)
+
+            if len(product_links) >= max_links:
+                break
+        except Exception:
+            # prøv neste søk-URL
+            continue
+
     return list(product_links)
 
 def extract_product(page, url) -> ProductResult:
