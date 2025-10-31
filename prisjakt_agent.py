@@ -456,18 +456,18 @@ if m30:
     notes_parts.append(f"Min30: {m30.group(2)}")
 notes = "; ".join(notes_parts) if notes_parts else "—"
 
-    return ProductResult(
-        product_url=url,
-        product_title=title or url,
-        min_3m_price=min_3m_val,
-        min_3m_date=min_3m_date,
-        now_price=now_val,
-        min_30_price=min_30_val,
-        delta_3m=d3, pct_3m=p3,
-        delta_30d=d30, pct_30d=p30,
-        suspicious=suspicious,
-        notes=notes
-    )
+return ProductResult(
+    product_url=url,
+    product_title=title or url,
+    min_3m_price=min_3m_val,
+    min_3m_date=min_3m_date,
+    now_price=now_val,
+    min_30_price=min_30_val,
+    delta_3m=d3, pct_3m=p3,
+    delta_30d=d30, pct_30d=p30,
+    suspicious=suspicious,
+    notes=notes
+)
 
 def fmt_money(x):
     return "" if x is None else f"{x:,.0f}".replace(",", " ").format(x)
