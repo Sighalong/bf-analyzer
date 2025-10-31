@@ -88,7 +88,7 @@ NOW_PATTERNS = [
 
 FRA_NOW_FALLBACK = re.compile(r"(?i)\bfra\s+([0-9\s\.]+[,\.]?\d*)\s*,-")
 
-def find_now_price_from_text(text: str) -> tuple[float|None, str]:
+def find_now_price_from_text(text: str):
     # prøv spesifikke mønstre først
     for pat in NOW_PATTERNS:
         m = pat.search(text)
@@ -122,7 +122,7 @@ class ProductResult:
     notes: str
 
 def clean_price_to_float(txt: str) -> float | None:
-    if not txt: 
+    if not txt:
         return None
     # keep digits, separators
     m = PRICE_RE.search(txt)
@@ -240,6 +240,7 @@ def collect_product_links_from_search(page, keyword, max_links=30):
         f"https://www.prisjakt.no/?q={quote_plus(keyword)}",  # fallback
     ]
     product_links = set()
+    html = ""
 
     for su in search_urls:
         try:
@@ -268,9 +269,9 @@ def collect_product_links_from_search(page, keyword, max_links=30):
             # Klikk "Vis mer" noen ganger hvis den finnes
             for _ in range(8):
                 try:
-                    show_more = page.locator("button:has-text('Vis mer'), a:has-text('Vis mer')")
-                    if show_more.first.is_visible():
-                        show_more.first.click(timeout=1200)
+                    show_more = page.locator("button:has-text('Vis mer'), a:has-text('Vis mer')").first
+                    if show_more.is_visible():
+                        show_more.click(timeout=1200)
                         time.sleep(0.6)
                         continue
                 except Exception:
@@ -309,12 +310,16 @@ def collect_product_links_from_search(page, keyword, max_links=30):
                 break
         except Exception:
             continue
-            
-    if not product_links:
-        open("/app/outputs/debug_search.html", "w", encoding="utf-8").write(html)
-                
-    return list(product_links)
 
+    if not product_links:
+        try:
+            os.makedirs("/app/outputs", exist_ok=True)
+            with open("/app/outputs/debug_search.html", "w", encoding="utf-8") as f:
+                f.write(html or "")
+        except Exception:
+            pass
+
+    return list(product_links)
 
 def collect_product_links_from_category(page, category_name, max_links=30):
     key = norm_key(category_name)
@@ -358,7 +363,7 @@ def collect_product_links_from_category(page, category_name, max_links=30):
                 html = page.content()
             except Exception:
                 html = ""
-            for m in re.finditer(r"https?://www\\.prisjakt\\.no/product\\.php\\?p=\\d+", html):
+            for m in re.finditer(r"https?://www\.prisjakt\.no/product\.php\?p=\d+", html):
                 product_links.add(m.group(0))
                 if len(product_links) >= max_links:
                     return list(product_links)
@@ -415,62 +420,62 @@ def extract_product(page, url) -> ProductResult:
     title = get_title(page)
     text = extract_text(page)
 
-# Find 'Laveste pris 3 mnd'
-m3 = find_first(text, LAVESTE_3M_RE)
-min_3m_val = None
-min_3m_date = None
-m3_notes = ""
-if m3:
-    min_3m_val = clean_price_to_float(m3.group(2))
-    # Try both date groups
-    date_raw = m3.group(3) or m3.group(4)
-    min_3m_date = parse_nor_date(date_raw) if date_raw else None
-    m3_notes = f"Laveste 3 mnd: {m3.group(2)}"
-    if date_raw:
-        m3_notes += f" ({date_raw})"
-else:
-    m3_notes = "Laveste 3 mnd: ikke funnet"
+    # --- Find 'Laveste pris 3 mnd' ---
+    m3 = find_first(text, LAVESTE_3M_RE)
+    min_3m_val = None
+    min_3m_date = None
+    m3_notes = ""
+    if m3:
+        min_3m_val = clean_price_to_float(m3.group(2))
+        # Try both date groups
+        date_raw = m3.group(3) or m3.group(4)
+        min_3m_date = parse_nor_date(date_raw) if date_raw else None
+        m3_notes = f"Laveste 3 mnd: {m3.group(2)}"
+        if date_raw:
+            m3_notes += f" ({date_raw})"
+    else:
+        m3_notes = "Laveste 3 mnd: ikke funnet"
 
-# Find 'Laveste pris 30 dager' (optional)
-m30 = find_first(text, LAVESTE_30D_RE)
-min_30_val = None
-if m30:
-    min_30_val = clean_price_to_float(m30.group(2))
+    # --- Find 'Laveste pris 30 dager' (optional) ---
+    m30 = find_first(text, LAVESTE_30D_RE)
+    min_30_val = None
+    if m30:
+        min_30_val = clean_price_to_float(m30.group(2))
 
-# Find 'Laveste pris nå' (flere mønstre + fallback "fra … ,-")
-now_val, now_src = find_now_price_from_text(text)
+    # --- Find 'Laveste pris nå' (flere mønstre + fallback "fra … ,-") ---
+    now_val, now_src = find_now_price_from_text(text)
 
-# Metrics + flagging
-d3, p3, d30, p30 = compute_metrics(min_3m_val, now_val, min_30_val)
-suspicious = is_suspicious(p3, now_val, min_30_val)
+    # --- Metrics + flagging ---
+    d3, p3, d30, p30 = compute_metrics(min_3m_val, now_val, min_30_val)
+    suspicious = is_suspicious(p3, now_val, min_30_val)
 
-# Notater
-notes_parts = []
-if m3_notes:
-    notes_parts.append(m3_notes)
-if now_val is not None:
-    notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
-    if now_src == "FRA":
-        notes_parts.append("(kilde: 'fra … ,-')")
-if m30:
-    notes_parts.append(f"Min30: {m30.group(2)}")
-notes = "; ".join(notes_parts) if notes_parts else "—"
+    # --- Notater ---
+    notes_parts = []
+    if m3_notes:
+        notes_parts.append(m3_notes)
+    if now_val is not None:
+        notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
+        if now_src == "FRA":
+            notes_parts.append("(kilde: 'fra … ,-')")
+    if m30:
+        notes_parts.append(f"Min30: {m30.group(2)}")
+    notes = "; ".join(notes_parts) if notes_parts else "—"
 
-return ProductResult(
-    product_url=url,
-    product_title=title or url,
-    min_3m_price=min_3m_val,
-    min_3m_date=min_3m_date,
-    now_price=now_val,
-    min_30_price=min_30_val,
-    delta_3m=d3, pct_3m=p3,
-    delta_30d=d30, pct_30d=p30,
-    suspicious=suspicious,
-    notes=notes
-)
+    return ProductResult(
+        product_url=url,
+        product_title=title or url,
+        min_3m_price=min_3m_val,
+        min_3m_date=min_3m_date,
+        now_price=now_val,
+        min_30_price=min_30_val,
+        delta_3m=d3, pct_3m=p3,
+        delta_30d=d30, pct_30d=p30,
+        suspicious=suspicious,
+        notes=notes
+    )
 
 def fmt_money(x):
-    return "" if x is None else f"{x:,.0f}".replace(",", " ").format(x)
+    return "" if x is None else f"{x:,.0f}".replace(",", " ")
 
 def save_csv(path, rows: list[ProductResult]):
     fieldnames = [
@@ -508,7 +513,8 @@ def save_markdown(path, rows: list[ProductResult], top_n=15):
             f"| [{r.product_title}]({r.product_url}) | {md_money(r.min_3m_price)} | "
             f"{r.min_3m_date or '—'} | {md_money(r.now_price)} | "
             f"{md_money(r.delta_3m)} | {pct3} | {md_money(r.min_30_price)} | "
-            f"{md_money(r.delta_30d)} | {pct30} | {'✅' if r.suspicious else '❌'} | {r.notes} |"
+            f"{md_money(r.delta_3m if r.delta_3m is not None else None)} | {pct30} | "
+            f"{'✅' if r.suspicious else '❌'} | {r.notes} |"
         )
     lines.append("\n")
     # Top lists
@@ -550,7 +556,6 @@ def make_browser_and_context(p):
                     "Chrome/127.0.0.0 Safari/537.36")
     )
     return browser, context
-
 
 def main():
     ap = argparse.ArgumentParser(description="Prisjakt price-change agent (Laveste pris 3 mnd / Nå).")
@@ -627,7 +632,6 @@ def main():
     save_csv(out_csv, results_sorted)
     save_markdown(out_md, results_sorted, top_n=20)
     print(f"[✓] Wrote: {out_csv} and {out_md}")
-
 
 if __name__ == "__main__":
     main()
