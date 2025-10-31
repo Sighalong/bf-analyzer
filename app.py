@@ -7,11 +7,12 @@ from fastapi import FastAPI, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import requests
+import stat
 
 APP_DIR = os.path.dirname(__file__)
 
 def ensure_output_dir():
-    # Use persistent dir if mounted, else /tmp
+    # Decide output dir (default under /app)
     default_path = os.path.join(APP_DIR, "outputs")
     wanted = os.environ.get("OUTPUT_DIR", default_path)
     try:
@@ -20,13 +21,33 @@ def ensure_output_dir():
         with open(testfile, "w", encoding="utf-8") as f:
             f.write("ok")
         os.remove(testfile)
-        return wanted, True
+        return wanted
     except Exception:
         tmpdir = "/tmp/prisjakt_outputs"
         os.makedirs(tmpdir, exist_ok=True)
-        return tmpdir, False
+        return tmpdir
 
-OUTPUT_DIR, HAS_PERSISTENT = ensure_output_dir()
+def detect_persistent(path: str) -> bool:
+    # 1) Allow explicit override
+    override = os.environ.get("FORCE_STORAGE_MODE", "").strip().lower()
+    if override in {"persistent", "ephemeral"}:
+        return override == "persistent"
+
+    # 2) Heuristic: different device than root or explicit mount point -> likely a mounted disk
+    try:
+        root_dev = os.stat("/").st_dev
+        path_dev = os.stat(path).st_dev
+        if os.path.ismount(path) or path_dev != root_dev:
+            return True
+    except Exception:
+        pass
+
+    # 3) Render Free: writable overlay looks like same device as '/'
+    # Treat as ephemeral by default
+    return False
+
+OUTPUT_DIR = ensure_output_dir()
+HAS_PERSISTENT = detect_persistent(OUTPUT_DIR)
 
 app = FastAPI(title="Prisjakt Agent")
 
@@ -66,9 +87,11 @@ def index():
         files = []
     lines = [
         "Prisjakt Agent is up.",
-        f"Storage: {'persistent disk' if HAS_PERSISTENT else 'ephemeral (/tmp)'}",
+        f"Storage: {'persistent disk' if HAS_PERSISTENT else 'ephemeral (/tmp or container fs)'}",
         "POST /run to trigger a scrape.",
         "GET  /files to browse output files via /files/<name>",
+        "",
+        f"OUTPUT_DIR: {OUTPUT_DIR}",
         "",
         "Current files:",
         *[f"- {name}" for name in files]
