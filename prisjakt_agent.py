@@ -548,18 +548,19 @@ else:
     suspicious = is_suspicious(p3, now_val, min_30_val)
 
     # --- Notater ---
-    notes_parts = []
-    if m3_notes:
-        notes_parts.append(m3_notes)
-    if now_val is not None:
-        notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
-        if now_src == "FRA":
-            notes_parts.append("(kilde: 'fra … ,-')")
-    if m30:
-        notes_parts.append(f"Min30: {m30.group(2)}")
-    notes = "; ".join(notes_parts) if notes_parts else "—"
-    if now_val is not None and now_src:
+notes_parts = []
+if m3_notes:
+    notes_parts.append(m3_notes)
+if now_val is not None:
+    notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
+    if now_src == "FRA":
+        notes_parts.append("(kilde: 'fra … ,-')")
+if m30:
+    notes_parts.append(f"Min30: {m30.group(1)}")
+if now_val is not None and now_src:
     notes_parts.append(f"(now-kilde: {now_src})")
+
+notes = "; ".join(notes_parts) if notes_parts else "—"
 
     return ProductResult(
         product_url=url,
