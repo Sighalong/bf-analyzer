@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: prisjakt-agent
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    disk:
+      name: output-disk
+      mountPath: /app/outputs
+      sizeGB: 1
+
+  # Optional: A separate Cron Job to trigger the web service periodically.
+  # Fill in YOUR_PUBLIC_WEB_URL below after first deploy (e.g., https://prisjakt-agent.onrender.com/run)
+  - type: cron
+    name: prisjakt-agent-cron
+    env: docker
+    dockerfilePath: ./Dockerfile
+    schedule: "0 6 * * *" # every day at 06:00 UTC
+    # Command pings the web service /run endpoint to generate fresh files on the web service's disk
+    # Replace YOUR_PUBLIC_WEB_URL with your service URL (e.g., https://prisjakt-agent.onrender.com/run)
+    # You can also customize categories via query params like: ?categories=TV&categories=Hodetelefoner
+    # Note: Cron Jobs do not share the web service disk; that's why we trigger the web endpoint.
+    command: |
+      bash -lc 'curl -X POST "YOUR_PUBLIC_WEB_URL" || true'
