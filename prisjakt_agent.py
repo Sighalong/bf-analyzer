@@ -450,6 +450,7 @@ def extract_stats_via_dom(page):
 
 
 def extract_product(page, url) -> ProductResult:
+    # 1) Last side + cookies
     page.goto(url, wait_until="load", timeout=30000)
     time.sleep(1.0)
     accept_cookies(page)
@@ -458,13 +459,10 @@ def extract_product(page, url) -> ProductResult:
     except Exception:
         pass
 
-    # Trigge lazy-load
-    page.mouse.wheel(0, 800)
-    time.sleep(0.4)
-    page.mouse.wheel(0, 1200)
-    time.sleep(0.5)
+    # 2) Trigger lazy-load + åpne prisstatistikk
+    page.mouse.wheel(0, 800); time.sleep(0.4)
+    page.mouse.wheel(0, 1200); time.sleep(0.5)
 
-    # 🔓 Åpne prishistorikk/prisstatistikk før vi leser tekst
     try:
         for sel in [
             "button:has-text('Prishistorikk')",
@@ -484,84 +482,64 @@ def extract_product(page, url) -> ProductResult:
     except Exception:
         pass
 
-    # Litt ekstra scroll for å sikre rendering av tekst
-    page.mouse.wheel(0, 1000)
-    time.sleep(0.4)
-    page.mouse.wheel(0, 1400)
-    time.sleep(0.4)
+    page.mouse.wheel(0, 1000); time.sleep(0.4)
+    page.mouse.wheel(0, 1400); time.sleep(0.4)
 
+    # 3) Tittel
     title = get_title(page)
-    stats_text = get_statistics_text(page)  # se ниже
+
+    # 4) Hent tall via DOM først (presist)
+    min_3m_val, min_3m_date, now_val = extract_stats_via_dom(page)
+
+    # 5) Fallback: hent tekst fra stats-seksjonen og regex
+    stats_text = get_statistics_text(page)
     text = stats_text if stats_text else extract_text(page)
 
-    # 1) DOM-forsøk (presist)
-min_3m_val, min_3m_date, now_val = extract_stats_via_dom(page)
+    # Laveste pris 3 mnd (regex hvis DOM feilet)
+    m3 = None
+    if min_3m_val is None:
+        m3 = find_first(text, LAVESTE_3M_RE)
+        if m3:
+            min_3m_val = clean_price_to_float(m3.group(1))
+            min_3m_date = parse_nor_date(m3.group(2)) if m3.group(2) else None
 
-# 2) Hvis DOM ikke ga tall, fall tilbake til tekst/regex (stats-seksjon eller hele siden)
-title = get_title(page)
-stats_text = get_statistics_text(page)
-text = stats_text if stats_text else extract_text(page)
-
-# Finn 'Laveste pris 3 mnd' via regex hvis DOM feilet
-m3 = None
-if min_3m_val is None:
-    m3 = find_first(text, LAVESTE_3M_RE)
-    if m3:
-        min_3m_val = clean_price_to_float(m3.group(1))
-        min_3m_date = parse_nor_date(m3.group(2)) if m3.group(2) else None
-
-# Finn 'Laveste pris 30 dager' (uansett nyttig for analyse)
-m30 = find_first(text, LAVESTE_30D_RE)
-min_30_val = clean_price_to_float(m30.group(1)) if m30 else None
-
-# Finn 'Nå'-pris via regex fallback hvis DOM feilet
-if now_val is None:
-    now_val, now_src = find_now_price_from_text(text)
-else:
-    now_src = "DOM"
-
-
-    # --- Find 'Laveste pris 3 mnd' ---
-   
-    m3 = find_first(text, LAVESTE_3M_RE)
-    min_3m_val = min_3m_date = None
-    m3_notes = ""
-    if m3:
-        min_3m_val = clean_price_to_float(m3.group(1))
-        min_3m_date = parse_nor_date(m3.group(2))
-        m3_notes = f"Laveste 3 mnd: {m3.group(1)} ({m3.group(2)})"
-    else:
-        m3_notes = "Laveste 3 mnd: ikke funnet"
-
+    # Laveste 30 dager (alltid nyttig for analyse)
     m30 = find_first(text, LAVESTE_30D_RE)
     min_30_val = clean_price_to_float(m30.group(1)) if m30 else None
 
-    # --- Find 'Laveste pris 30 dager' (optional) ---
-    m30 = find_first(text, LAVESTE_30D_RE)
-    min_30_val = clean_price_to_float(m30.group(1)) if m30 else None  # var group(2)
+    # Nå-pris (regex fallback hvis DOM feilet)
+    if now_val is None:
+        now_val, now_src = find_now_price_from_text(text)
+    else:
+        now_src = "DOM"
 
-    # --- Find 'Laveste pris nå' (flere mønstre + fallback "fra … ,-") ---
-    now_val, now_src = find_now_price_from_text(text)
-
-    # --- Metrics + flagging ---
+    # 6) Beregn avvik/%%
     d3, p3, d30, p30 = compute_metrics(min_3m_val, now_val, min_30_val)
     suspicious = is_suspicious(p3, now_val, min_30_val)
 
-    # --- Notater ---
-notes_parts = []
-if m3_notes:
-    notes_parts.append(m3_notes)
-if now_val is not None:
-    notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
-    if now_src == "FRA":
-        notes_parts.append("(kilde: 'fra … ,-')")
-if m30:
-    notes_parts.append(f"Min30: {m30.group(1)}")
-if now_val is not None and now_src:
-    notes_parts.append(f"(now-kilde: {now_src})")
+    # 7) Notater
+    if m3 and not min_3m_date and len(m3.groups()) >= 2:
+        # sikring: hvis regex traff uten dato
+        pass
 
-notes = "; ".join(notes_parts) if notes_parts else "—"
+    m3_notes = (
+        "Laveste 3 mnd: ikke funnet" if min_3m_val is None
+        else f"Laveste 3 mnd: {int(round(min_3m_val)):,}".replace(",", " ")
+             + (f" ({min_3m_date})" if min_3m_date else "")
+    )
 
+    notes_parts = [m3_notes]
+    if now_val is not None:
+        notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
+        if now_src == "FRA":
+            notes_parts.append("(kilde: 'fra … ,-')")
+        elif now_src == "DOM":
+            notes_parts.append("(now-kilde: DOM)")
+    if m30:
+        notes_parts.append(f"Min30: {m30.group(1)}")
+    notes = "; ".join([p for p in notes_parts if p]) if notes_parts else "—"
+
+    # 8) Return (⚠️ må ligge INNI funksjonen – 4 mellomrom innrykk)
     return ProductResult(
         product_url=url,
         product_title=title or url,
@@ -574,6 +552,7 @@ notes = "; ".join(notes_parts) if notes_parts else "—"
         suspicious=suspicious,
         notes=notes
     )
+
 
 def fmt_money(x):
     return "" if x is None else f"{x:,.0f}".replace(",", " ")
