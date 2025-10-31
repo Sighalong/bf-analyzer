@@ -26,10 +26,12 @@ import time
 import re
 import csv
 import argparse
+import os
 from urllib.parse import quote_plus
 from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, asdict
+from playwright_stealth import stealth_sync
 
 # ---- Kategori-URLer (direkte listing) ----
 CATEGORY_URLS = {
@@ -479,6 +481,30 @@ def save_markdown(path, rows: list[ProductResult], top_n=15):
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
+def make_browser_and_context(p):
+    """
+    Koble til Browserless hvis BROWSERLESS_WS_URL er satt, ellers lokal Chromium.
+    Returnerer (browser, context).
+    """
+    ws = os.getenv("BROWSERLESS_WS_URL", "").strip()
+    if ws:
+        # Managed browser (omgår Cloudflare best)
+        browser = p.chromium.connect(ws_endpoint=ws)
+    else:
+        # Fallback: lokal headless (kan blokkeres av Cloudflare)
+        browser = p.chromium.launch(headless=True)
+
+    context = browser.new_context(
+        locale="nb-NO",
+        timezone_id="Europe/Oslo",
+        viewport={"width": 1366, "height": 900},
+        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/127.0.0.0 Safari/537.36")
+    )
+    return browser, context
+
+
 def main():
     ap = argparse.ArgumentParser(description="Prisjakt price-change agent (Laveste pris 3 mnd / Nå).")
     ap.add_argument("--categories", nargs="*", default=[
@@ -501,16 +527,9 @@ def main():
 
     print("[i] Starting Playwright…")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            locale="nb-NO",
-            timezone_id="Europe/Oslo",
-            viewport={"width": 1366, "height": 900},
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/127.0.0.0 Safari/537.36")
-        )
+        browser, context = make_browser_and_context(p)
         page = context.new_page()
+        stealth_sync(page)
 
         # 🔎 Oppdag produkter: prøv kategoriside først, så søk
         for cat in args.categories:
