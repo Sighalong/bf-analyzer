@@ -31,6 +31,31 @@ from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 
+# ---- Kategori-URLer (direkte listing) ----
+CATEGORY_URLS = {
+    "tv": "https://www.prisjakt.no/c/tv",
+    "mobiltelefoner": "https://www.prisjakt.no/c/mobiltelefoner",
+    "baerbarepcer": "https://www.prisjakt.no/c/baerbare-pc-er",
+    "hodetelefoner": "https://www.prisjakt.no/c/hodetelefoner",
+    "skjermer": "https://www.prisjakt.no/c/skjermer",
+    "smartklokker": "https://www.prisjakt.no/c/smartklokker",
+    "robotstovsugere": "https://www.prisjakt.no/c/robotstovsugere",
+    "nettbrett": "https://www.prisjakt.no/c/nettbrett",
+    "spillkonsoller": "https://www.prisjakt.no/c/spillkonsoller",
+}
+
+def norm_key(s: str) -> str:
+    # grov normalisering (æ->ae, ø->o, å->a, fjerne mellomrom og spesialtegn)
+    repl = (
+        ("æ","ae"), ("ø","o"), ("å","a"),
+        ("Æ","ae"), ("Ø","o"), ("Å","a"),
+        (" ",""), ("-",""), ("/","")
+    )
+    out = s
+    for a,b in repl:
+        out = out.replace(a,b)
+    return re.sub(r"[^a-z0-9]", "", out.lower())
+
 NOR_MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "mai": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "okt": 10, "nov": 11, "des": 12
@@ -245,6 +270,61 @@ def collect_product_links_from_search(page, keyword, max_links=30):
 
     return list(product_links)
 
+def collect_product_links_from_category(page, category_name, max_links=30):
+    key = norm_key(category_name)
+    url = CATEGORY_URLS.get(key)
+    if not url:
+        return []  # ukjent kategori -> la caller bruke søke-fallback
+
+    product_links = set()
+    try:
+        page.goto(url, wait_until="load", timeout=30000)
+        time.sleep(1.0)
+        accept_cookies(page)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+
+        # scroll dypt for å laste flere kort
+        for _ in range(24):
+            page.mouse.wheel(0, 1600)
+            time.sleep(0.25)
+
+            # 1) via DOM
+            try:
+                anchors = page.locator("a[href*='product.php?p=']")
+                hrefs = anchors.evaluate_all("(els) => els.map(e => e.getAttribute('href'))")
+            except Exception:
+                hrefs = []
+            for h in hrefs:
+                if not h:
+                    continue
+                if h.startswith("/"):
+                    h = "https://www.prisjakt.no" + h
+                if PRODUCT_URL_RE.match(h):
+                    product_links.add(h)
+                    if len(product_links) >= max_links:
+                        return list(product_links)
+
+            # 2) via rå HTML (fallback)
+            try:
+                html = page.content()
+            except Exception:
+                html = ""
+            for m in re.finditer(r"https?://www\\.prisjakt\\.no/product\\.php\\?p=\\d+", html):
+                product_links.add(m.group(0))
+                if len(product_links) >= max_links:
+                    return list(product_links)
+
+            if len(product_links) >= max_links:
+                break
+
+    except Exception:
+        pass
+
+    return list(product_links)
+
 def extract_product(page, url) -> ProductResult:
     page.goto(url, wait_until="load", timeout=30000)
     time.sleep(1.0)
@@ -405,17 +485,30 @@ def main():
 )
         page = context.new_page()
 
-        # Discover by categories (search)
-        for cat in args.categories:
-            if len(all_urls) >= args.max_per_category * max(1, len(args.categories)):
-                break
-            try:
-                links = collect_product_links_from_search(page, cat, max_links=args.max_per_category)
-                print(f"[+] {cat}: found {len(links)} product links")
-                for l in links:
-                    all_urls.add(l)
-            except Exception as e:
-                print(f"[warn] discovery failed for {cat}: {e}")
+# Discover by categories: prøv kategoriside først, så søk
+for cat in args.categories:
+    if len(all_urls) >= args.max_per_category * max(1, len(args.categories)):
+        break
+    links = []
+    # 1) kategoriside
+    try:
+        links = collect_product_links_from_category(page, cat, max_links=args.max_per_category)
+        if links:
+            print(f"[+] {cat} (category page): found {len(links)} product links")
+    except Exception as e:
+        print(f"[warn] category discovery failed for {cat}: {e}")
+
+    # 2) søk som fallback
+    if not links:
+        try:
+            links = collect_product_links_from_search(page, cat, max_links=args.max_per_category)
+            print(f"[+] {cat} (search): found {len(links)} product links")
+        except Exception as e:
+            print(f"[warn] search discovery failed for {cat}: {e}")
+
+    for l in links:
+        all_urls.add(l)
+
 
         # Deduplicate and limit
         urls = list(all_urls)[: args.max_per_category * max(1, len(args.categories))]
