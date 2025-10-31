@@ -80,13 +80,16 @@ LAVESTE_30D_RE = re.compile(
 )
 # 'Laveste pris nå' | 'Den billigste prisen ... (nå)' | 'Nå'
 NOW_PATTERNS = [
+    re.compile(r"(?i)(?:tilbud\s+fra|pris\s+fra)\s+([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
     re.compile(r"(?i)den\s+billigste\s+prisen[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
     re.compile(r"(?i)laveste\s+pris\s+nå[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
     re.compile(r"(?i)dagens\s+laveste\s+pris[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
     re.compile(r"(?i)\bNå\b[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
 ]
 
-FRA_NOW_FALLBACK = re.compile(r"(?i)\bfra\s+([0-9\s\.]+[,\.]?\d*)\s*,-")
+FRA_NOW_FALLBACK = re.compile(
+    r"(?i)(?:tilbud\s+)?fra\s+([0-9][0-9\s\.]{3,}[,\.]?\d*)\s*(?:,-|kr|nok)?"
+)
 
 def find_now_price_from_text(text: str):
     # prøv spesifikke mønstre først
@@ -376,6 +379,38 @@ def collect_product_links_from_category(page, category_name, max_links=30):
 
     return list(product_links)
 
+def get_statistics_text(page) -> str | None:
+    """
+    Returnerer inner_text fra seksjonen som inneholder 'Laveste pris 3 mnd' / 'Laveste pris nå'.
+    Faller tilbake til None hvis ikke funnet.
+    """
+    candidates = [
+        "section:has-text('Laveste pris 3 mnd')",
+        "section:has-text('Prisstatistikk')",
+        "section:has-text('Prishistorikk')",
+        "#statistics",
+        "[id*='statistikk']",
+        "[id*='statistics']",
+    ]
+    for sel in candidates:
+        try:
+            loc = page.locator(sel).first
+            if loc and loc.count() > 0 and loc.is_visible():
+                return loc.inner_text(timeout=2000)
+        except Exception:
+            pass
+    # fallback: nærmeste ancestor-section til labelen
+    try:
+        label = page.locator("text=Laveste pris 3 mnd").first
+        if label and label.is_visible():
+            anc = label.locator("xpath=ancestor::section[1]")
+            if anc and anc.count() > 0:
+                return anc.inner_text(timeout=2000)
+    except Exception:
+        pass
+    return None
+
+
 def extract_product(page, url) -> ProductResult:
     page.goto(url, wait_until="load", timeout=30000)
     time.sleep(1.0)
@@ -418,7 +453,8 @@ def extract_product(page, url) -> ProductResult:
     time.sleep(0.4)
 
     title = get_title(page)
-    text = extract_text(page)
+    stats_text = get_statistics_text(page)
+    text = stats_text if stats_text else extract_text(page)
 
     # --- Find 'Laveste pris 3 mnd' ---
     m3 = find_first(text, LAVESTE_3M_RE)
