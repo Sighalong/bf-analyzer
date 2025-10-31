@@ -457,13 +457,16 @@ def save_markdown(path, rows: list[ProductResult], top_n=15):
 
 def main():
     ap = argparse.ArgumentParser(description="Prisjakt price-change agent (Laveste pris 3 mnd / Nå).")
-    ap.add_argument("--categories", nargs="*", default=["TV", "Mobiltelefoner", "Bærbare PC-er", "Hodetelefoner", "Robotstøvsugere", "Skjermer", "Smartklokker"])
+    ap.add_argument("--categories", nargs="*", default=[
+        "TV", "Mobiltelefoner", "Bærbare PC-er", "Hodetelefoner", "Robotstøvsugere", "Skjermer", "Smartklokker"
+    ])
     ap.add_argument("--max-per-category", type=int, default=20)
     ap.add_argument("--product-urls", type=str, help="Optional path to a text file with product URLs (one per line).")
     ap.add_argument("--min-price-nok", type=int, default=500)
     ap.add_argument("--out-prefix", type=str, default="prisjakt_output")
     args = ap.parse_args()
 
+    # Start med eventuelle manuelle URLer
     all_urls = set()
     if args.product_urls:
         with open(args.product_urls, "r", encoding="utf-8") as f:
@@ -476,50 +479,49 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-    locale="nb-NO",
-    timezone_id="Europe/Oslo",
-    viewport={"width": 1366, "height": 900},
-    user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/127.0.0.0 Safari/537.36")
-)
+            locale="nb-NO",
+            timezone_id="Europe/Oslo",
+            viewport={"width": 1366, "height": 900},
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/127.0.0.0 Safari/537.36")
+        )
         page = context.new_page()
 
-# Discover by categories: prøv kategoriside først, så søk
-for cat in args.categories:
-    if len(all_urls) >= args.max_per_category * max(1, len(args.categories)):
-        break
-    links = []
-    # 1) kategoriside
-    try:
-        links = collect_product_links_from_category(page, cat, max_links=args.max_per_category)
-        if links:
-            print(f"[+] {cat} (category page): found {len(links)} product links")
-    except Exception as e:
-        print(f"[warn] category discovery failed for {cat}: {e}")
+        # 🔎 Oppdag produkter: prøv kategoriside først, så søk
+        for cat in args.categories:
+            if len(all_urls) >= args.max_per_category * max(1, len(args.categories)):
+                break
 
-    # 2) søk som fallback
-    if not links:
-        try:
-            links = collect_product_links_from_search(page, cat, max_links=args.max_per_category)
-            print(f"[+] {cat} (search): found {len(links)} product links")
-        except Exception as e:
-            print(f"[warn] search discovery failed for {cat}: {e}")
+            links = []
+            # 1) Kategoriside
+            try:
+                links = collect_product_links_from_category(page, cat, max_links=args.max_per_category)
+                if links:
+                    print(f"[+] {cat} (category page): found {len(links)} product links")
+            except Exception as e:
+                print(f"[warn] category discovery failed for {cat}: {e}")
 
-    for l in links:
-        all_urls.add(l)
+            # 2) Søk fallback
+            if not links:
+                try:
+                    links = collect_product_links_from_search(page, cat, max_links=args.max_per_category)
+                    print(f"[+] {cat} (search): found {len(links)} product links")
+                except Exception as e:
+                    print(f"[warn] search discovery failed for {cat}: {e}")
 
+            for l in links:
+                all_urls.add(l)
 
-        # Deduplicate and limit
+        # 🚚 Dedup + begrensning
         urls = list(all_urls)[: args.max_per_category * max(1, len(args.categories))]
         print(f"[i] Total candidate product URLs: {len(urls)}")
-        results = []
 
+        results = []
         for i, url in enumerate(urls, 1):
             try:
                 print(f"    ({i}/{len(urls)}) Scraping: {url}")
                 r = extract_product(page, url)
-                # Filter by min price
                 if r.now_price is not None and r.now_price < args.min_price_nok:
                     r.notes += "; filtrert bort (< min pris)"
                 results.append(r)
@@ -528,13 +530,14 @@ for cat in args.categories:
 
         browser.close()
 
-    # Sort results for the main table by suspicious first then by abs delta desc
+    # 🧾 Lagre rapporter
     results_sorted = sorted(results, key=lambda r: ((not r.suspicious), -(r.delta_3m or -1e9)))
     out_csv = args.out_prefix + ".csv"
     out_md = args.out_prefix + ".md"
     save_csv(out_csv, results_sorted)
     save_markdown(out_md, results_sorted, top_n=20)
     print(f"[✓] Wrote: {out_csv} and {out_md}")
+
 
 if __name__ == "__main__":
     main()
