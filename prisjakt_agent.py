@@ -539,23 +539,42 @@ def save_csv(path, rows: list[ProductResult]):
                 r.notes
             ])
 
+def arrow(delta):
+    if delta is None:
+        return "–"
+    return "🔺" if delta > 0 else ("🔻" if delta < 0 else "⏸️")
+
+def md_money(x):
+    return "—" if x is None else f"{int(round(x)):,}".replace(",", " ")
+
 def save_markdown(path, rows: list[ProductResult], top_n=15):
-    def md_money(x): return "—" if x is None else f"{int(round(x)):,}".replace(",", " ")
     lines = []
-    lines.append("| Produkt | Laveste 3 mnd (kr) | Dato (3 mnd) | Nå (kr) | Δ3m (kr) | %Δ3m | Min30 (kr) | Δ30d (kr) | %Δ30d | Mistenkelig | Notater |")
-    lines.append("|---|---:|:---:|---:|---:|---:|---:|---:|---:|:---:|---|")
+    lines.append("| Produkt | Laveste pris 3 mnd | Nå (kr) | Δ3m | %Δ3m | Laveste 30d | Δ30d | %Δ30d | Mistenkelig | Notater |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|:---:|---|")
+
     for r in rows:
+        three_month = (
+            "—" if r.min_3m_price is None
+            else f"{md_money(r.min_3m_price)}" + (f" ({r.min_3m_date})" if r.min_3m_date else "")
+        )
         pct3 = "—" if r.pct_3m is None else f"{r.pct_3m:.1f}%"
         pct30 = "—" if r.pct_30d is None else f"{r.pct_30d:.1f}%"
+
         lines.append(
-            f"| [{r.product_title}]({r.product_url}) | {md_money(r.min_3m_price)} | "
-            f"{r.min_3m_date or '—'} | {md_money(r.now_price)} | "
-            f"{md_money(r.delta_3m)} | {pct3} | {md_money(r.min_30_price)} | "
-            f"{md_money(r.delta_30d)} | {pct30} | "
-            f"{'✅' if r.suspicious else '❌'} | {r.notes} |"
+            f"| [{r.product_title}]({r.product_url}) "
+            f"| {three_month} "
+            f"| **{md_money(r.now_price)}** "
+            f"| {arrow(r.delta_3m)} {md_money(r.delta_3m)} "
+            f"| {pct3} "
+            f"| {md_money(r.min_30_price)} "
+            f"| {arrow(r.delta_30d)} {md_money(r.delta_30d)} "
+            f"| {pct30} "
+            f"| {'✅' if r.suspicious else '❌'} "
+            f"| {r.notes} |"
         )
+
     lines.append("\n")
-    # Top lists
+    # Topplister
     by_abs = [r for r in rows if r.delta_3m is not None]
     by_abs.sort(key=lambda r: r.delta_3m, reverse=True)
     by_pct = [r for r in rows if r.pct_3m is not None]
@@ -563,14 +582,21 @@ def save_markdown(path, rows: list[ProductResult], top_n=15):
 
     lines.append("## Toppliste: Størst absolutt økning (3 mnd)")
     for i, r in enumerate(by_abs[:top_n], 1):
-        lines.append(f"{i}. **[{r.product_title}]({r.product_url})** — +{md_money(r.delta_3m)} kr (**+{r.pct_3m:.1f}%**), nå: {md_money(r.now_price)} kr.")
+        lines.append(
+            f"{i}. **[{r.product_title}]({r.product_url})** — {arrow(r.delta_3m)} "
+            f"+{md_money(r.delta_3m)} kr (**+{r.pct_3m:.1f}%**), nå: {md_money(r.now_price)} kr."
+        )
 
     lines.append("\n## Toppliste: Størst prosentvis økning (3 mnd)")
     for i, r in enumerate(by_pct[:top_n], 1):
-        lines.append(f"{i}. **[{r.product_title}]({r.product_url})** — +{md_money(r.delta_3m)} kr (**+{r.pct_3m:.1f}%**), nå: {md_money(r.now_price)} kr.")
+        lines.append(
+            f"{i}. **[{r.product_title}]({r.product_url})** — {arrow(r.delta_3m)} "
+            f"+{md_money(r.delta_3m)} kr (**+{r.pct_3m:.1f}%**), nå: {md_money(r.now_price)} kr."
+        )
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
 
 def make_browser_and_context(p):
     """
