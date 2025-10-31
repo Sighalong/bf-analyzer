@@ -281,15 +281,16 @@ def collect_product_links_from_search(page, keyword, max_links=30):
                 for m in re.finditer(r"https?://www\.prisjakt\.no/product\.php\?p=\d+", html):
                     product_links.add(m.group(0))
                     if len(product_links) >= max_links:
-                            if not product_links:
-    open("/app/outputs/debug_search.html", "w", encoding="utf-8").write(html)
                         return list(product_links)
 
             if len(product_links) >= max_links:
                 break
         except Exception:
             continue
-
+            
+    if not product_links:
+        open("/app/outputs/debug_search.html", "w", encoding="utf-8").write(html)
+                
     return list(product_links)
 
 
