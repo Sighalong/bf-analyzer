@@ -66,11 +66,11 @@ NOR_MONTHS = {
 PRICE_RE = re.compile(r"[\d\s\.]+[,\.]?\d*")
 # Flexible patterns to capture the 'Laveste pris 3 mnd' block + optional date
 LAVESTE_3M_RE = re.compile(
-    r"(?i)(laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager))[^\n\r\d]*"
-    r"([\d\s\.]+[,\.]?\d*)\s*[,\-]*\s*"
+    r"(?i)(laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager))[^0-9\n\r]*"
+    r"([0-9\s\.]+[,\.]?\d*)\s*[,–-]*\s*"
     r"(?:\(|\b)?"
-    r"(?:(\d{1,2}[\.\s]?(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
-    r"(\d{1,2}[\.\-/]\d{1,2}[\.\-/]\d{2,4}))?",
+    r"(?:(\d{1,2}[\. ]?(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
+    r"(\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2,4}))?",
     re.UNICODE
 )
 # 'Laveste pris 30 dager' if present
@@ -79,10 +79,30 @@ LAVESTE_30D_RE = re.compile(
     r"([\d\s\.]+[,\.]?\d*)"
 )
 # 'Laveste pris nå' | 'Den billigste prisen ... (nå)' | 'Nå'
-NOW_RE = re.compile(
-    r"(?i)(?:laveste\s+pris\s+nå|dagens\s+laveste\s+pris|den\s+billigste\s+prisen[^\n\r]*?\(\s*nå\s*\)|\bNå\b[^\n\r\d]*?)"
-    r"([\d\s\.]+[,\.]?\d*)"
-)
+NOW_PATTERNS = [
+    re.compile(r"(?i)den\s+billigste\s+prisen[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
+    re.compile(r"(?i)laveste\s+pris\s+nå[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
+    re.compile(r"(?i)dagens\s+laveste\s+pris[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
+    re.compile(r"(?i)\bNå\b[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
+]
+
+FRA_NOW_FALLBACK = re.compile(r"(?i)\bfra\s+([0-9\s\.]+[,\.]?\d*)\s*,-")
+
+def find_now_price_from_text(text: str) -> tuple[float|None, str]:
+    # prøv spesifikke mønstre først
+    for pat in NOW_PATTERNS:
+        m = pat.search(text)
+        if m:
+            val = clean_price_to_float(m.group(1))
+            if val is not None:
+                return val, "NOW"
+    # fallback: “Tilbud fra 11 990 ,-”
+    m2 = FRA_NOW_FALLBACK.search(text)
+    if m2:
+        val = clean_price_to_float(m2.group(1))
+        if val is not None:
+            return val, "FRA"
+    return None, ""
 
 PRODUCT_URL_RE = re.compile(r"https?://www\.prisjakt\.no/product\.php\?p=\d+")
 
@@ -352,62 +372,85 @@ def collect_product_links_from_category(page, category_name, max_links=30):
     return list(product_links)
 
 def extract_product(page, url) -> ProductResult:
-    page.goto(url, wait_until="load", timeout=30000)
+      page.goto(url, wait_until="load", timeout=30000)
     time.sleep(1.0)
     accept_cookies(page)
-
-    # Vent til siden er ferdig med å laste dynamisk innhold
     try:
         page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         pass
 
-    # Trigge lazy-load av pris- og tekstseksjoner
-    page.mouse.wheel(0, 800)
-    time.sleep(0.4)
-    page.mouse.wheel(0, 1200)
-    time.sleep(0.5)
+    # Trigge lazy-load
+    page.mouse.wheel(0, 800); time.sleep(0.4)
+    page.mouse.wheel(0, 1200); time.sleep(0.5)
 
+    # 🔓 Åpne prishistorikk/prisstatistikk før vi leser tekst
+    try:
+        for sel in [
+            "button:has-text('Prishistorikk')",
+            "a:has-text('Prishistorikk')",
+            "button:has-text('Prisstatistikk')",
+            "a:has-text('Prisstatistikk')",
+        ]:
+            el = page.locator(sel).first
+            if el.is_visible():
+                el.click(timeout=1200)
+                time.sleep(0.6)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+                break
+    except Exception:
+        pass
+
+    # Litt ekstra scroll for å sikre rendering av tekst
+    page.mouse.wheel(0, 1000); time.sleep(0.4)
+    page.mouse.wheel(0, 1400); time.sleep(0.4)
 
     title = get_title(page)
     text = extract_text(page)
 
-    # Find 'Laveste pris 3 mnd'
-    m3 = find_first(text, LAVESTE_3M_RE)
-    min_3m_val = None
-    min_3m_date = None
-    m3_notes = ""
-    if m3:
-        min_3m_val = clean_price_to_float(m3.group(2))
-        # Try both date groups
-        date_raw = m3.group(3) or m3.group(4)
-        min_3m_date = parse_nor_date(date_raw) if date_raw else None
-        m3_notes = f"Laveste 3 mnd: {m3.group(2)}"
-        if date_raw:
-            m3_notes += f" ({date_raw})"
-    else:
-        m3_notes = "Laveste 3 mnd: ikke funnet"
+# Find 'Laveste pris 3 mnd'
+m3 = find_first(text, LAVESTE_3M_RE)
+min_3m_val = None
+min_3m_date = None
+m3_notes = ""
+if m3:
+    min_3m_val = clean_price_to_float(m3.group(2))
+    # Try both date groups
+    date_raw = m3.group(3) or m3.group(4)
+    min_3m_date = parse_nor_date(date_raw) if date_raw else None
+    m3_notes = f"Laveste 3 mnd: {m3.group(2)}"
+    if date_raw:
+        m3_notes += f" ({date_raw})"
+else:
+    m3_notes = "Laveste 3 mnd: ikke funnet"
 
-    # Find 'Laveste pris 30 dager' (optional)
-    m30 = find_first(text, LAVESTE_30D_RE)
-    min_30_val = None
-    if m30:
-        min_30_val = clean_price_to_float(m30.group(2))
+# Find 'Laveste pris 30 dager' (optional)
+m30 = find_first(text, LAVESTE_30D_RE)
+min_30_val = None
+if m30:
+    min_30_val = clean_price_to_float(m30.group(2))
 
-    # Find 'Laveste pris nå' variants
-    mn = find_first(text, NOW_RE)
-    now_val = None
-    if mn:
-        now_val = clean_price_to_float(mn.group(1))
+# Find 'Laveste pris nå' (flere mønstre + fallback "fra … ,-")
+now_val, now_src = find_now_price_from_text(text)
 
-    d3, p3, d30, p30 = compute_metrics(min_3m_val, now_val, min_30_val)
-    suspicious = is_suspicious(p3, now_val, min_30_val)
+# Metrics + flagging
+d3, p3, d30, p30 = compute_metrics(min_3m_val, now_val, min_30_val)
+suspicious = is_suspicious(p3, now_val, min_30_val)
 
-    notes_parts = []
-    if m3_notes: notes_parts.append(m3_notes)
-    if mn: notes_parts.append(f"Nå: {mn.group(1)}")
-    if m30: notes_parts.append(f"Min30: {m30.group(2)}")
-    notes = "; ".join(notes_parts) if notes_parts else "—"
+# Notater
+notes_parts = []
+if m3_notes:
+    notes_parts.append(m3_notes)
+if now_val is not None:
+    notes_parts.append(f"Nå: {int(round(now_val)):,}".replace(",", " "))
+    if now_src == "FRA":
+        notes_parts.append("(kilde: 'fra … ,-')")
+if m30:
+    notes_parts.append(f"Min30: {m30.group(2)}")
+notes = "; ".join(notes_parts) if notes_parts else "—"
 
     return ProductResult(
         product_url=url,
