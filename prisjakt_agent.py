@@ -414,6 +414,40 @@ def get_statistics_text(page) -> str | None:
         pass
     return None
 
+def extract_stats_via_dom(page):
+    """
+    Leser 'Laveste pris 3 mnd' (pris + dato) og 'Laveste pris nå' direkte fra DOM’en
+    i prisstatistikk-panelet. Returnerer (min_3m_val, min_3m_date, now_val) eller (None,...)
+    """
+    def first_text(loc):
+        try:
+            if loc and loc.count() > 0 and loc.first.is_visible():
+                return loc.first.inner_text(timeout=1500)
+        except Exception:
+            pass
+        return None
+
+    # Pris 3 mnd (pris + dato): ta første <p> etter label som pris, andre som dato
+    lbl_3m = page.locator("xpath=//*[normalize-space()='Laveste pris 3 mnd']")
+    price_3m_txt = first_text(lbl_3m.locator("xpath=following::p[1]"))
+    date_3m_txt  = first_text(lbl_3m.locator("xpath=following::p[2]"))
+
+    # Nåpris: første <p> etter label
+    lbl_now = page.locator("xpath=//*[normalize-space()='Laveste pris nå']")
+    now_txt = first_text(lbl_now.locator("xpath=following::p[1]"))
+
+    min_3m_val = clean_price_to_float(price_3m_txt or "")
+    min_3m_date = parse_nor_date(date_3m_txt or "") if date_3m_txt else None
+    now_val = clean_price_to_float(now_txt or "")
+
+    # Filter vekk tydelig feil (små tall fra modellstørrelser)
+    if now_val is not None and now_val < 500:
+        now_val = None
+    if min_3m_val is not None and min_3m_val < 500:
+        min_3m_val = None
+
+    return min_3m_val, min_3m_date, now_val
+
 
 def extract_product(page, url) -> ProductResult:
     page.goto(url, wait_until="load", timeout=30000)
@@ -460,6 +494,33 @@ def extract_product(page, url) -> ProductResult:
     stats_text = get_statistics_text(page)  # se ниже
     text = stats_text if stats_text else extract_text(page)
 
+    # 1) DOM-forsøk (presist)
+min_3m_val, min_3m_date, now_val = extract_stats_via_dom(page)
+
+# 2) Hvis DOM ikke ga tall, fall tilbake til tekst/regex (stats-seksjon eller hele siden)
+title = get_title(page)
+stats_text = get_statistics_text(page)
+text = stats_text if stats_text else extract_text(page)
+
+# Finn 'Laveste pris 3 mnd' via regex hvis DOM feilet
+m3 = None
+if min_3m_val is None:
+    m3 = find_first(text, LAVESTE_3M_RE)
+    if m3:
+        min_3m_val = clean_price_to_float(m3.group(1))
+        min_3m_date = parse_nor_date(m3.group(2)) if m3.group(2) else None
+
+# Finn 'Laveste pris 30 dager' (uansett nyttig for analyse)
+m30 = find_first(text, LAVESTE_30D_RE)
+min_30_val = clean_price_to_float(m30.group(1)) if m30 else None
+
+# Finn 'Nå'-pris via regex fallback hvis DOM feilet
+if now_val is None:
+    now_val, now_src = find_now_price_from_text(text)
+else:
+    now_src = "DOM"
+
+
     # --- Find 'Laveste pris 3 mnd' ---
    
     m3 = find_first(text, LAVESTE_3M_RE)
@@ -497,6 +558,8 @@ def extract_product(page, url) -> ProductResult:
     if m30:
         notes_parts.append(f"Min30: {m30.group(2)}")
     notes = "; ".join(notes_parts) if notes_parts else "—"
+    if now_val is not None and now_src:
+    notes_parts.append(f"(now-kilde: {now_src})")
 
     return ProductResult(
         product_url=url,
