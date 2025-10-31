@@ -67,18 +67,17 @@ PRICE_RE = re.compile(r"[\d\s\.]+[,\.]?\d*")
 # Flexible patterns to capture the 'Laveste pris 3 mnd' block + optional date
 # Laveste pris 3 mnd – tillat linjeskift og krev "ordentlige" priser (minst 4 tegn)
 LAVESTE_3M_RE = re.compile(
-    r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager)\s*[:–\-]?\s*"
-    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)"
-    r"(?:\s*[,–\-]?\s*(?:\(|\b)?"
-    r"((?:\d{1,2}[\. ]?(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
-    r"(?:\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2,4})))?",
+    r"(?is)laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager).*?"
+    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)[^0-9a-z]+"
+    r"((?:\d{1,2}\s*(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
+    r"(?:\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2,4}))",
     re.UNICODE
 )
 
-# Laveste pris 30 dager – også tillat linjeskift
 LAVESTE_30D_RE = re.compile(
-    r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:30\s*dager|1\s*mnd)\s*[:–\-]?\s*"
-    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)"
+    r"(?is)laveste\s+pris\s*(?:siste\s*)?(?:30\s*dager|1\s*mnd).*?"
+    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)",
+    re.UNICODE
 )
 
 # 'Laveste pris nå' | 'Den billigste prisen ... (nå)' | 'Nå'
@@ -464,17 +463,17 @@ def extract_product(page, url) -> ProductResult:
     # --- Find 'Laveste pris 3 mnd' ---
    
     m3 = find_first(text, LAVESTE_3M_RE)
-    min_3m_val = None
-    min_3m_date = None
+    min_3m_val = min_3m_date = None
     m3_notes = ""
     if m3:
-        min_3m_val = clean_price_to_float(m3.group(1))  # var group(2)
-        # datoen ligger nå i group(2)
-        date_raw = m3.group(2)
-        min_3m_date = parse_nor_date(date_raw) if date_raw else None
-        m3_notes = f"Laveste 3 mnd: {m3.group(1)}" + (f" ({date_raw})" if date_raw else "")
+        min_3m_val = clean_price_to_float(m3.group(1))
+        min_3m_date = parse_nor_date(m3.group(2))
+        m3_notes = f"Laveste 3 mnd: {m3.group(1)} ({m3.group(2)})"
     else:
         m3_notes = "Laveste 3 mnd: ikke funnet"
+
+    m30 = find_first(text, LAVESTE_30D_RE)
+    min_30_val = clean_price_to_float(m30.group(1)) if m30 else None
 
     # --- Find 'Laveste pris 30 dager' (optional) ---
     m30 = find_first(text, LAVESTE_30D_RE)
