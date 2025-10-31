@@ -98,9 +98,11 @@ def index():
     ]
     return "\n".join(lines)
 
-@app.post("/run", response_class=PlainTextResponse)
-def run(categories: list[str] = Query(default=["TV","Mobiltelefoner","Bærbare PC-er","Hodetelefoner","Robotstøvsugere","Skjermer","Smartklokker"]),
-        max_per_category: int = 20):
+@app.api_route("/run", methods=["GET", "POST"], response_class=PlainTextResponse)
+def run(
+    categories: list[str] = Query(default=["TV","Mobiltelefoner","Hodetelefoner","Skjermer"]),
+    max_per_category: int = 6,   # lavere default for raskere kjøringer i nettleser
+):
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_prefix = os.path.join(OUTPUT_DIR, f"prisjakt_{timestamp}")
     cmd = [
