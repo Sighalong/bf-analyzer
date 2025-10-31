@@ -513,7 +513,7 @@ def save_markdown(path, rows: list[ProductResult], top_n=15):
             f"| [{r.product_title}]({r.product_url}) | {md_money(r.min_3m_price)} | "
             f"{r.min_3m_date or '—'} | {md_money(r.now_price)} | "
             f"{md_money(r.delta_3m)} | {pct3} | {md_money(r.min_30_price)} | "
-            f"{md_money(r.delta_3m if r.delta_3m is not None else None)} | {pct30} | "
+            f"{md_money(r.delta_30d)} | {pct30} | "
             f"{'✅' if r.suspicious else '❌'} | {r.notes} |"
         )
     lines.append("\n")
