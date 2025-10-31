@@ -65,19 +65,22 @@ NOR_MONTHS = {
 
 PRICE_RE = re.compile(r"[\d\s\.]+[,\.]?\d*")
 # Flexible patterns to capture the 'Laveste pris 3 mnd' block + optional date
+# Laveste pris 3 mnd – tillat linjeskift og krev "ordentlige" priser (minst 4 tegn)
 LAVESTE_3M_RE = re.compile(
-    r"(?i)(laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager))[^0-9\n\r]*"
-    r"([0-9\s\.]+[,\.]?\d*)\s*[,–-]*\s*"
-    r"(?:\(|\b)?"
-    r"(?:(\d{1,2}[\. ]?(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
-    r"(\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2,4}))?",
+    r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager)\s*[:–\-]?\s*"
+    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)"
+    r"(?:\s*[,–\-]?\s*(?:\(|\b)?"
+    r"((?:\d{1,2}[\. ]?(?:jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des)[a-z\.]*\s*\d{4})|"
+    r"(?:\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2,4})))?",
     re.UNICODE
 )
-# 'Laveste pris 30 dager' if present
+
+# Laveste pris 30 dager – også tillat linjeskift
 LAVESTE_30D_RE = re.compile(
-    r"(?i)(laveste\s+pris\s*(?:siste\s*)?(?:30\s*dager|1\s*mnd))[^\n\r\d]*"
-    r"([\d\s\.]+[,\.]?\d*)"
+    r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:30\s*dager|1\s*mnd)\s*[:–\-]?\s*"
+    r"([0-9][0-9\s\.]{3,}[,\.]?\d*)"
 )
+
 # 'Laveste pris nå' | 'Den billigste prisen ... (nå)' | 'Nå'
 NOW_PATTERNS = [
     re.compile(r"(?i)(?:tilbud\s+fra|pris\s+fra)\s+([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
@@ -455,30 +458,27 @@ def extract_product(page, url) -> ProductResult:
     time.sleep(0.4)
 
     title = get_title(page)
-    stats_text = get_statistics_text(page)
+    stats_text = get_statistics_text(page)  # se ниже
     text = stats_text if stats_text else extract_text(page)
 
     # --- Find 'Laveste pris 3 mnd' ---
+   
     m3 = find_first(text, LAVESTE_3M_RE)
     min_3m_val = None
     min_3m_date = None
     m3_notes = ""
     if m3:
-        min_3m_val = clean_price_to_float(m3.group(2))
-        # Try both date groups
-        date_raw = m3.group(3) or m3.group(4)
-        min_3m_date = parse_nor_date(date_raw) if date_raw else None
-        m3_notes = f"Laveste 3 mnd: {m3.group(2)}"
-        if date_raw:
-            m3_notes += f" ({date_raw})"
-    else:
-        m3_notes = "Laveste 3 mnd: ikke funnet"
+        min_3m_val = clean_price_to_float(m3.group(1))  # var group(2)
+        # datoen ligger nå i group(2)
+    date_raw = m3.group(2)
+    min_3m_date = parse_nor_date(date_raw) if date_raw else None
+    m3_notes = f"Laveste 3 mnd: {m3.group(1)}" + (f" ({date_raw})" if date_raw else "")
+else:
+    m3_notes = "Laveste 3 mnd: ikke funnet"
 
     # --- Find 'Laveste pris 30 dager' (optional) ---
     m30 = find_first(text, LAVESTE_30D_RE)
-    min_30_val = None
-    if m30:
-        min_30_val = clean_price_to_float(m30.group(2))
+    min_30_val = clean_price_to_float(m30.group(1)) if m30 else None  # var group(2)
 
     # --- Find 'Laveste pris nå' (flere mønstre + fallback "fra … ,-") ---
     now_val, now_src = find_now_price_from_text(text)
