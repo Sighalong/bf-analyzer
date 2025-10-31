@@ -1,0 +1,335 @@
+name: Apply Robust Patch
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply file changes (write patched files)
+        run: |
+          set -euo pipefail
+
+          # === requirements.txt ===
+          cat > requirements.txt << 'EOF'
+          playwright>=1.44
+          pandas>=2.1
+          rich>=13.7
+          python-dateutil>=2.8.2
+          EOF
+
+          # === Dockerfile ===
+          cat > Dockerfile << 'EOF'
+          FROM mcr.microsoft.com/playwright/python:v1.44.0-focal
+          WORKDIR /app
+          COPY requirements.txt ./requirements.txt
+          RUN pip install --no-cache-dir -r requirements.txt
+          COPY . .
+          # Playwright-image inkluderer nettlesere og deps. I noen PaaS må Chromium kjøre uten sandbox.
+          ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+          CMD ["python", "app.py"]
+          EOF
+
+          # === prisjakt_agent.py ===
+          cat > prisjakt_agent.py << 'EOF'
+          import asyncio
+          import argparse
+          import pathlib
+          import random
+          import re
+          from dataclasses import dataclass, asdict
+          from typing import Iterable, List, Optional, Tuple
+
+          import pandas as pd
+          from playwright.async_api import async_playwright
+          from rich.console import Console
+          from rich.table import Table
+          from dateutil import parser as dtparser
+
+          console = Console()
+
+          # ---------- Regexer og hjelpere (inline) ----------
+          PRICE_3M_PATTERNS = [
+              r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:3\s*mnd|90\s*dager).*?(\d[\d\s\.]*)\s*(?:kr)?",
+              r"(?i)laveste\s+pris\s+90\s*dager.*?(\d[\d\s\.]*)\s*(?:kr)?",
+          ]
+          PRICE_30D_PATTERNS = [
+              r"(?i)laveste\s+pris\s*(?:siste\s*)?(?:30\s*dager|1\s*mnd).*?(\d[\d\s\.]*)\s*(?:kr)?",
+          ]
+          PRICE_NOW_PATTERNS = [
+              r"(?i)(?:laveste\s+pris\s+nå|dagens\s+laveste\s+pris|nå).*?(\d[\d\s\.]*)\s*(?:kr)?",
+              r"(?i)den\s+billigste\s+prisen.*?(\d[\d\s\.]*)\s*(?:kr)?",
+          ]
+          DATE_PATTERNS = [
+              r"(?i)(\d{1,2}\.\d{1,2}\.\d{2,4})",     # 31.10.2025
+              r"(?i)(\d{1,2}\s+\w+\s+\d{4})",         # 31 oktober 2025
+          ]
+
+          def parse_nok(s: str) -> Optional[int]:
+              """'12 345 kr' / '12.345' -> 12345"""
+              if not s:
+                  return None
+              s = s.replace("\u00A0", " ").replace(" ", "").replace(".", "")
+              s = re.sub(r"[^\d]", "", s)
+              return int(s) if s else None
+
+          def find_first(text: str, patterns: Iterable[str]) -> Optional[int]:
+              for pat in patterns:
+                  m = re.search(pat, text, flags=re.DOTALL)
+                  if m:
+                      val = parse_nok(m.group(1))
+                      if val is not None:
+                          return val
+              return None
+
+          def find_date(text: str) -> Optional[str]:
+              for pat in DATE_PATTERNS:
+                  m = re.search(pat, text)
+                  if m:
+                      try:
+                          dt = dtparser.parse(m.group(1), dayfirst=True, fuzzy=True)
+                          return dt.date().isoformat()
+                      except Exception:
+                          return m.group(1)
+              return None
+
+          def uniq(seq: Iterable[str]) -> List[str]:
+              seen = set()
+              out: List[str] = []
+              for x in seq:
+                  if x and x not in seen:
+                      seen.add(x)
+                      out.append(x)
+              return out
+
+          # ---------- Nett og scraping ----------
+          async def _gentle_scroll(page, steps=4, pause_ms=350):
+              for _ in range(steps):
+                  await page.evaluate("window.scrollBy(0, document.body.scrollHeight/2)")
+                  await page.wait_for_timeout(pause_ms + random.randint(0, 250))
+
+          async def _all_links(page) -> List[str]:
+              return await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+
+          async def gather_product_links(page, category: str, limit: int, timeout_ms: int, delay_ms: int, debug: bool) -> List[str]:
+              search_url = f"https://www.prisjakt.no/search?search={category}"
+              await page.goto(search_url, wait_until="networkidle", timeout=timeout_ms)
+              await _gentle_scroll(page, steps=5, pause_ms=delay_ms)
+              hrefs = await _all_links(page)
+              candidates = [h for h in hrefs if "/product" in h.lower() or "/produkt" in h.lower()]
+              links = uniq(candidates)[:limit]
+              if debug:
+                  console.log(f"[bold]Kategori[/]: {category} -> {len(links)} lenker")
+              return links
+
+          @dataclass
+          class Row:
+              url: str
+              now: Optional[int]
+              min3m: Optional[int]
+              min30d: Optional[int]
+              date3m: Optional[str]
+              suspicious: bool
+              note: str
+
+          async def scrape_product(page, url: str, timeout_ms: int, delay_ms: int, debug: bool) -> Row:
+              await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+              await _gentle_scroll(page, steps=3, pause_ms=delay_ms)
+              # Hent synlig tekst (fallback til HTML hvis nødvendig)
+              try:
+                  text = await page.inner_text("body", timeout=4000)
+              except Exception:
+                  text = (await page.content())
+              p3m = find_first(text, PRICE_3M_PATTERNS)
+              p30 = find_first(text, PRICE_30D_PATTERNS)
+              pnow = find_first(text, PRICE_NOW_PATTERNS)
+              d3m = find_date(text)
+
+              note_parts = []
+              if p3m is None: note_parts.append("min3m_missing")
+              if p30 is None: note_parts.append("min30_missing")
+              if pnow is None: note_parts.append("now_missing")
+
+              suspicious = False
+              if p3m is not None and pnow is not None and p3m > 0:
+                  pct = (pnow - p3m) / p3m * 100
+                  if pct >= 15.0:
+                      suspicious = True
+                      note_parts.append(f"pct3m={pct:.1f}%")
+              if p30 is not None and pnow is not None and p30 > 0:
+                  pct30 = (pnow - p30) / p30 * 100
+                  if pct30 >= 10.0:
+                      suspicious = True
+                      note_parts.append(f"pct30={pct30:.1f}%")
+
+              if debug:
+                  console.log(f"{url}  now={pnow}  min3m={p3m}  min30d={p30}  date3m={d3m}")
+
+              return Row(
+                  url=url, now=pnow, min3m=p3m, min30d=p30, date3m=d3m,
+                  suspicious=suspicious, note=";".join(note_parts)
+              )
+
+          async def run(categories: List[str],
+                        product_urls: List[str],
+                        max_per_category: int,
+                        out_prefix: str,
+                        min_price_nok: int,
+                        headful: bool,
+                        timeout_ms: int,
+                        delay_ms: int,
+                        debug: bool) -> Tuple[pd.DataFrame, List[str]]:
+              errors: List[str] = []
+              async with async_playwright() as pw:
+                  browser = await pw.chromium.launch(headless=not headful, args=["--no-sandbox"])
+                  context = await browser.new_context(
+                      user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+                      viewport={"width": 1366, "height": 900},
+                  )
+                  page = await context.new_page()
+
+                  links: List[str] = []
+                  for cat in categories:
+                      try:
+                          cat_links = await gather_product_links(page, cat, max_per_category, timeout_ms, delay_ms, debug)
+                          links.extend(cat_links)
+                      except Exception as e:
+                          errors.append(f"[category:{cat}] {e}")
+                  if product_urls:
+                      links.extend(product_urls)
+                  links = uniq(links)
+
+                  rows: List[Row] = []
+                  for i, url in enumerate(links, 1):
+                      try:
+                          row = await scrape_product(page, url, timeout_ms, delay_ms, debug)
+                          if row.now is not None and row.now < min_price_nok:
+                              if debug:
+                                  console.log(f"Skip <min price> {row.now} NOK: {url}")
+                              continue
+                          rows.append(row)
+                      except Exception as e:
+                          errors.append(f"[product:{url}] {e}")
+                      await page.wait_for_timeout(200 + random.randint(0, delay_ms))
+
+                  await context.close()
+                  await browser.close()
+
+              df = pd.DataFrame([asdict(r) for r in rows])
+              if not df.empty:
+                  df["delta3m"] = df.apply(lambda r: (r["now"] - r["min3m"]) if (pd.notna(r["now"]) and pd.notna(r["min3m"])) else pd.NA, axis=1)
+                  df["pct3m"] = df.apply(lambda r: (r["delta3m"] / r["min3m"] * 100) if (pd.notna(r["delta3m"]) and r["min3m"] not in [None, 0, pd.NA]) else pd.NA, axis=1)
+                  df = df.sort_values(by=["suspicious", "pct3m"], ascending=[False, False], na_position="last")
+              return df, errors
+
+          def read_urls_file(path: Optional[str]) -> List[str]:
+              if not path:
+                  return []
+              p = pathlib.Path(path)
+              if not p.exists():
+                  console.log(f"[yellow]Advarsel[/]: fant ikke {path}")
+                  return []
+              return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+          def main():
+              ap = argparse.ArgumentParser(description="Prisjakt Black Friday pris-agent")
+              ap.add_argument("--categories", nargs="*", default=["TV", "Mobiltelefoner"], help="Kategorier/temaer å søke på")
+              ap.add_argument("--max-per-category", type=int, default=20)
+              ap.add_argument("--product-urls", type=str, default=None, help="Fil med produkt-URL-er (en per linje)")
+              ap.add_argument("--min-price-nok", type=int, default=500)
+              ap.add_argument("--out-prefix", type=str, default="prisjakt_output")
+              ap.add_argument("--timeout-ms", type=int, default=45000)
+              ap.add_argument("--delay-ms", type=int, default=350)
+              ap.add_argument("--headful", action="store_true")
+              ap.add_argument("--debug", action="store_true")
+              args = ap.parse_args()
+
+              product_urls = read_urls_file(args.product_urls)
+
+              if args.debug:
+                  console.rule("[bold]Konfig")
+                  tbl = Table(show_header=True, header_style="bold")
+                  for k, v in vars(args).items():
+                      tbl.add_row(str(k), str(v))
+                  console.print(tbl)
+
+              df, errors = asyncio.run(run(
+                  categories=args.categories,
+                  product_urls=product_urls,
+                  max_per_category=args.max_per_category,
+                  out_prefix=args.out_prefix,
+                  min_price_nok=args.min_price_nok,
+                  headful=args.headful,
+                  timeout_ms=args.timeout_ms,
+                  delay_ms=args.delay_ms,
+                  debug=args.debug,
+              ))
+
+              # Lagre ut-filer
+              out = pathlib.Path(".")
+              (out / f"{args.out_prefix}.csv").write_text(df.to_csv(index=False), encoding="utf-8")
+              if df.empty:
+                  (out / f"{args.out_prefix}.md").write_text("_Ingen data funnet._", encoding="utf-8")
+              else:
+                  md_lines: List[str] = []
+                  md_lines.append(f"# Prisjakt-analyse\n")
+                  top_abs = df.dropna(subset=["delta3m"]).sort_values("delta3m", ascending=False).head(10)
+                  top_pct = df.dropna(subset=["pct3m"]).sort_values("pct3m", ascending=False).head(10)
+                  md_lines.append("## Topp 10 – størst økning siste 3 mnd (absolutt)\n")
+                  for _, r in top_abs.iterrows():
+                      md_lines.append(f"- {r['url']}  —  +{int(r['delta3m'])} NOK")
+                  md_lines.append("\n## Topp 10 – størst økning siste 3 mnd (prosent)\n")
+                  for _, r in top_pct.iterrows():
+                      md_lines.append(f"- {r['url']}  —  +{r['pct3m']:.1f}%")
+                  md_lines.append("\n## Full tabell\n")
+                  md_lines.append(df.to_markdown(index=False))
+                  (out / f"{args.out_prefix}.md").write_text("\n".join(md_lines), encoding="utf-8")
+
+              if errors:
+                  console.rule("[bold red]Feil / advarsler")
+                  for e in errors:
+                      console.print(f"- {e}")
+                  console.print("[yellow]Fullførte med noen feil (se over).[/]")
+              else:
+                  console.print("[green]Fullført uten feil.[/]")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # === README.md (append en liten seksjon) ===
+          cat >> README.md << 'EOF'
+
+          ---
+          ### Robust modus (nytt)
+          Tillegg:
+          - `--timeout-ms` (default 45000)
+          - `--delay-ms` (default 350)
+          - `--headful` (nyttig for feilsøking lokalt)
+          - `--debug` (ekstra logging)
+
+          Tips ved anti-bot: senk volum, øk `--delay-ms`, kjør `--headful` lokalt.
+          EOF
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: feat/robust-inline-debug
+          title: "feat: robust scraping, regex + logging (inline)"
+          body: |
+            Denne PR-en er auto-generert av workflowen **Apply Robust Patch**.
+            Endringer:
+            - Oppgradert `requirements.txt` (playwright/pandas + rich/dateutil)
+            - Dockerfile byttet til Playwright-base for stabil headless-kjøring
+            - `prisjakt_agent.py` gjort mer robust (vent/scroll/regex/NOK-parsing + rapport)
+            - README oppdatert med nye flagg
+          commit-message: "feat: robust scraping patch (inline)"
+          base: main
+          signoff: false
