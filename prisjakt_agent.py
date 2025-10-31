@@ -81,31 +81,33 @@ LAVESTE_30D_RE = re.compile(
 # 'Laveste pris nå' | 'Den billigste prisen ... (nå)' | 'Nå'
 NOW_PATTERNS = [
     re.compile(r"(?i)(?:tilbud\s+fra|pris\s+fra)\s+([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
-    re.compile(r"(?i)den\s+billigste\s+prisen[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
-    re.compile(r"(?i)laveste\s+pris\s+nå[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
-    re.compile(r"(?i)dagens\s+laveste\s+pris[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
-    re.compile(r"(?i)\bNå\b[^0-9]*([0-9\s\.]+[,\.]?\d*)"),
+    re.compile(r"(?i)laveste\s+pris\s+nå[^0-9]*([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
+    re.compile(r"(?i)den\s+billigste\s+prisen[^0-9]*([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
+    re.compile(r"(?i)\bNå\b[^0-9]*([0-9][0-9\s\.]{3,}[,\.]?\d*)"),
 ]
-
 FRA_NOW_FALLBACK = re.compile(
     r"(?i)(?:tilbud\s+)?fra\s+([0-9][0-9\s\.]{3,}[,\.]?\d*)\s*(?:,-|kr|nok)?"
 )
 
 def find_now_price_from_text(text: str):
-    # prøv spesifikke mønstre først
+    # Prøv "nå"-mønstre først
     for pat in NOW_PATTERNS:
         m = pat.search(text)
         if m:
             val = clean_price_to_float(m.group(1))
-            if val is not None:
+            # filtrer vekk modellstørrelser o.l.
+            if val is not None and val >= 500:
                 return val, "NOW"
-    # fallback: “Tilbud fra 11 990 ,-”
+
+    # Fallback: "Tilbud fra …" / "Pris fra …"
     m2 = FRA_NOW_FALLBACK.search(text)
     if m2:
         val = clean_price_to_float(m2.group(1))
-        if val is not None:
+        if val is not None and val >= 500:
             return val, "FRA"
+
     return None, ""
+
 
 PRODUCT_URL_RE = re.compile(r"https?://www\.prisjakt\.no/product\.php\?p=\d+")
 
