@@ -470,11 +470,11 @@ def extract_product(page, url) -> ProductResult:
     if m3:
         min_3m_val = clean_price_to_float(m3.group(1))  # var group(2)
         # datoen ligger nå i group(2)
-    date_raw = m3.group(2)
-    min_3m_date = parse_nor_date(date_raw) if date_raw else None
-    m3_notes = f"Laveste 3 mnd: {m3.group(1)}" + (f" ({date_raw})" if date_raw else "")
-else:
-    m3_notes = "Laveste 3 mnd: ikke funnet"
+        date_raw = m3.group(2)
+        min_3m_date = parse_nor_date(date_raw) if date_raw else None
+        m3_notes = f"Laveste 3 mnd: {m3.group(1)}" + (f" ({date_raw})" if date_raw else "")
+    else:
+        m3_notes = "Laveste 3 mnd: ikke funnet"
 
     # --- Find 'Laveste pris 30 dager' (optional) ---
     m30 = find_first(text, LAVESTE_30D_RE)
