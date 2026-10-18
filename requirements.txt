@@ -1,7 +1,2 @@
-playwright==1.48.0
-playwright-stealth==1.0.6
-
-fastapi==0.115.4
-uvicorn==0.32.0
-
-requests==2.32.3
+# bf-analyzer needs only the Python standard library (3.7+), so it runs on a Raspberry Pi 1B.
+# Nothing to install. Keep it that way: no Playwright, FastAPI, requests, pydantic.

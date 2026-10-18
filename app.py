@@ -1,146 +1,126 @@
-# app.py - FastAPI wrapper to run the scraper on Render and serve outputs
+# app.py - tiny web UI for bf-analyzer (stdlib only, runs on a Raspberry Pi 1B)
+#   GET  /            latest analysis as HTML
+#   GET|POST /run     start a collection run in the background (one at a time)
+#   GET  /files/<n>   download a file from OUTPUT_DIR (reports, database)
+#   GET  /status      plain-text status
 import os
 import subprocess
-import shlex
-from datetime import datetime
-from fastapi import FastAPI, Query
-from fastapi.responses import PlainTextResponse
-from fastapi.staticfiles import StaticFiles
-import requests
-import stat
+import sys
+import threading
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_DIR = os.path.dirname(__file__)
+from bfa import analyze, net, report
+from bfa.store import Store
 
-def ensure_output_dir():
-    # Decide output dir (default under /app)
-    default_path = os.path.join(APP_DIR, "outputs")
-    wanted = os.environ.get("OUTPUT_DIR", default_path)
-    try:
-        os.makedirs(wanted, exist_ok=True)
-        testfile = os.path.join(wanted, ".writetest")
-        with open(testfile, "w", encoding="utf-8") as f:
-            f.write("ok")
-        os.remove(testfile)
-        return wanted
-    except Exception:
-        tmpdir = "/tmp/prisjakt_outputs"
-        os.makedirs(tmpdir, exist_ok=True)
-        return tmpdir
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.abspath(os.environ.get("OUTPUT_DIR", os.path.join(APP_DIR, "outputs")))
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.environ["OUTPUT_DIR"] = OUTPUT_DIR
 
-def detect_persistent(path: str) -> bool:
-    # 1) Allow explicit override
-    override = os.environ.get("FORCE_STORAGE_MODE", "").strip().lower()
-    if override in {"persistent", "ephemeral"}:
-        return override == "persistent"
+_run_lock = threading.Lock()
+_last_run = {"code": None}
+_page_cache = {}
 
-    # 2) Heuristic: different device than root or explicit mount point -> likely a mounted disk
-    try:
-        root_dev = os.stat("/").st_dev
-        path_dev = os.stat(path).st_dev
-        if os.path.ismount(path) or path_dev != root_dev:
-            return True
-    except Exception:
-        pass
 
-    # 3) Render Free: writable overlay looks like same device as '/'
-    # Treat as ephemeral by default
-    return False
+def _db_mtime(path):
+    # WAL mode writes go to the -wal file first
+    return max(os.path.getmtime(p) for p in (path, path + "-wal") if os.path.exists(p))
 
-OUTPUT_DIR = ensure_output_dir()
-HAS_PERSISTENT = detect_persistent(OUTPUT_DIR)
 
-app = FastAPI(title="Prisjakt Agent")
+def _collect(args):
+    cmd = [sys.executable, "-m", "bfa", "run", "--format", "none"] + args
+    with open(os.path.join(OUTPUT_DIR, "last_run.log"), "w", encoding="utf-8") as log:
+        res = subprocess.run(cmd, cwd=APP_DIR, stdout=log, stderr=subprocess.STDOUT)
+    _last_run["code"] = res.returncode
+    _run_lock.release()
 
-# Serve generated files (works even if OUTPUT_DIR is /tmp)
-app.mount("/files", StaticFiles(directory=OUTPUT_DIR), name="files")
 
-def upload_gist(file_map: dict, public=False):
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return None, "GITHUB_TOKEN not set; cannot upload Gist."
-    files_payload = {}
-    for name, path in file_map.items():
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                files_payload[name] = {"content": f.read()}
-    if not files_payload:
-        return None, "No files to upload."
-    payload = {
-        "public": public,
-        "description": "Prisjakt agent output",
-        "files": files_payload
-    }
-    r = requests.post("https://api.github.com/gists",
-                      headers={"Authorization": f"token {token}",
-                               "Accept": "application/vnd.github+json"},
-                      json=payload, timeout=30)
-    if r.status_code >= 300:
-        return None, f"Gist upload failed: {r.status_code} {r.text[:200]}"
-    url = r.json().get("html_url")
-    return url, None
+def start_run(query):
+    if not _run_lock.acquire(blocking=False):
+        return False
+    args = []
+    cats = query.get("categories", [])
+    if cats:
+        args += ["--categories"] + cats
+    for key in ("max_per_category", "max_products"):
+        if key in query and query[key][0].isdigit():
+            args += ["--" + key.replace("_", "-"), query[key][0]]
+    threading.Thread(target=_collect, args=(args,), daemon=True).start()
+    return True
 
-@app.get("/", response_class=PlainTextResponse)
-def index():
-    try:
-        files = sorted(os.listdir(OUTPUT_DIR))
-    except Exception:
-        files = []
-    lines = [
-        "Prisjakt Agent is up.",
-        f"Storage: {'persistent disk' if HAS_PERSISTENT else 'ephemeral (/tmp or container fs)'}",
-        "POST /run to trigger a scrape.",
-        "GET  /files to browse output files via /files/<name>",
-        "",
-        f"OUTPUT_DIR: {OUTPUT_DIR}",
-        "",
-        "Current files:",
-        *[f"- {name}" for name in files]
-    ]
-    return "\n".join(lines)
 
-@app.api_route("/run", methods=["GET", "POST"], response_class=PlainTextResponse)
-def run(
-    categories: list[str] = Query(default=["TV","Mobiltelefoner","Hodetelefoner","Skjermer"]),
-    max_per_category: int = 6,   # lavere default for raskere kjøringer i nettleser
-):
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    out_prefix = os.path.join(OUTPUT_DIR, f"prisjakt_{timestamp}")
-    cmd = [
-        "python", "prisjakt_agent.py",
-        "--out-prefix", out_prefix,
-        "--max-per-category", str(max_per_category)
-    ]
-    for c in categories:
-        cmd += ["--categories", c]
-    print("Running:", cmd, flush=True)
-    try:
-        res = subprocess.run(cmd, cwd=APP_DIR, text=True, capture_output=True, timeout=60*25)
-    except subprocess.TimeoutExpired:
-        return PlainTextResponse("Timed out while scraping.", status_code=504)
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code, body, ctype="text/html; charset=utf-8", extra=None):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
 
-    # Summarize results
-    csv_path = f"{out_prefix}.csv"
-    md_path = f"{out_prefix}.md"
-    lines = []
-    lines.append("Scrape finished.")
-    lines.append("Command: " + " ".join(shlex.quote(x) for x in cmd))
-    lines.append("Return code: " + str(res.returncode))
-    lines.append("--- stdout ---")
-    lines.append(res.stdout[-2000:])
-    lines.append("--- stderr ---")
-    lines.append(res.stderr[-2000:])
-    lines.append("--- outputs ---")
-    if os.path.exists(csv_path): lines.append("/files/" + os.path.basename(csv_path))
-    if os.path.exists(md_path):  lines.append("/files/" + os.path.basename(md_path))
+    def _files(self):
+        return sorted(n for n in os.listdir(OUTPUT_DIR) if not n.startswith(".") and not n.endswith(("-wal", "-shm")))
 
-    if not HAS_PERSISTENT:
-        gist_url, err = upload_gist({
-            os.path.basename(csv_path): csv_path,
-            os.path.basename(md_path): md_path
-        })
-        if gist_url:
-            lines.append(f"Gist: {gist_url}")
-        else:
-            lines.append(f"Gist: failed ({err})")
+    def _index(self):
+        # Analysis takes seconds on a Pi 1B: cache it until the database (or the day) changes.
+        store = Store()
+        try:
+            key = (_db_mtime(store.path), net.today_oslo(), _run_lock.locked())
+            if _page_cache.get("key") != key:
+                findings = analyze.analyze(store, key[1])
+                shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
+                _page_cache.update(key=key, page=report.html_page(
+                    findings, store.stats(), self._files(), key[2], shops))
+        finally:
+            store.close()
+        return _page_cache["page"]
 
-    return "\n".join(lines)
+    def do_GET(self):
+        url = urllib.parse.urlsplit(self.path)
+        if url.path == "/":
+            return self._send(200, self._index())
+        if url.path == "/status":
+            return self._send(200, "running: {}\nlast exit code: {}\noutput dir: {}\n".format(
+                _run_lock.locked(), _last_run["code"], OUTPUT_DIR), "text/plain; charset=utf-8")
+        if url.path == "/run":
+            return self._run(url)
+        if url.path.startswith("/files/"):
+            name = os.path.basename(urllib.parse.unquote(url.path[len("/files/"):]))
+            path = os.path.join(OUTPUT_DIR, name)
+            if not name or not os.path.isfile(path):
+                return self._send(404, "not found", "text/plain")
+            ctype = {".md": "text/markdown; charset=utf-8", ".csv": "text/csv; charset=utf-8",
+                     ".log": "text/plain; charset=utf-8"}.get(os.path.splitext(name)[1], "application/octet-stream")
+            with open(path, "rb") as fh:
+                return self._send(200, fh.read(), ctype)
+        return self._send(404, "not found", "text/plain")
+
+    def do_POST(self):
+        url = urllib.parse.urlsplit(self.path)
+        if url.path == "/run":
+            return self._run(url)
+        return self._send(404, "not found", "text/plain")
+
+    def _run(self, url):
+        started = start_run(urllib.parse.parse_qs(url.query))
+        if self.command == "POST" and "text/html" in self.headers.get("Accept", ""):
+            return self._send(303, "", extra={"Location": "/"})
+        return self._send(202 if started else 409,
+                          "started\n" if started else "a run is already in progress\n", "text/plain")
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+
+def main():
+    port = int(os.environ.get("PORT", "8080"))
+    host = os.environ.get("HOST", "0.0.0.0")
+    print("bf-analyzer on http://{}:{}  (OUTPUT_DIR={})".format(host, port, OUTPUT_DIR), flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
