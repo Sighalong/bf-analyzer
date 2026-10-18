@@ -56,17 +56,39 @@ class Outputs(unittest.TestCase):
 
     def test_html_has_shop_ranking_and_escapes(self):
         page = report.html_page([finding()], STATS, [], False, shops=[shop_row("<script>alert(1)</script>")])
-        self.assertIn("Butikker med flest flaggede produkter", page)
+        self.assertIn("Butikker med flest mistenkelige produkter", page)
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("&lt;script&gt;", page)
         self.assertIn("<svg", page)
 
-    def test_html_without_shops_still_renders_heading(self):
-        self.assertIn(report.SHOPS_TITLE, report.html_page([], STATS, [], True))
+    def test_html_empty_state_and_running(self):
+        page = report.html_page([], STATS, [], True)
+        self.assertIn("Ingen mistenkelige priser funnet ennå", page)
+        self.assertIn("27. nov", page)               # Black Friday 2026
+        self.assertIn("Henter …", page)
+        self.assertNotIn("id='fcat'", page)          # no filters without findings
+
+    def test_html_sections_filters_and_story(self):
+        fs = [finding(), finding(rule="deal", score=0.1, now=900.0, category="mobil", shop="Ærlig"),
+              finding(rule="before_price", claimed=1500.0, low30=1000.0, base_median=None, peak=None)]
+        page = report.html_page(fs, STATS, ["bfa_report.csv"], False, shops=[shop_row()])
+        self.assertIn("2 mistenkelige tilbud</b> hos 1 butikker", page)
+        self.assertIn("<option value='mobil'>Mobil</option>", page)
+        self.assertIn("data-rule='fake_discount' open", page)
+        self.assertIn("Var vanligvis 1 000 kr. Hevet til 1 300 kr 5. nov, nå «tilbud» 1 000 kr.", page)
+        self.assertIn("Oppgir før-pris 1 500 kr", page)
+        self.assertIn("normalpris målt før 1. okt", page)
+        self.assertIn("<b>Prishopp:</b> ingen funnet.", page)
+        self.assertIn("/files/bfa_report.csv", page)
+
+    def test_nice_baseline(self):
+        self.assertEqual(report.nice_baseline("tidlig 10-18–10-31"), "kun 18. okt–31. okt (lite data)")
+        self.assertEqual(report.nice_baseline("dag 31–90"), "1–3 måneder siden")
+        self.assertEqual(report.nice_day("2026-11-05"), "5. nov")
 
     def test_text_has_shop_ranking(self):
         out = report.text([finding()], STATS, shops=[shop_row()])
-        self.assertIn("== Butikker med flest flaggede produkter (1) ==", out)
+        self.assertIn("== Butikker med flest mistenkelige produkter (1) ==", out)
         self.assertIn("3 av 6 produkter (50 %): 2 falsk rabatt, 1 før-pris", out)
 
     def test_markdown_has_shop_ranking(self):
@@ -74,7 +96,7 @@ class Outputs(unittest.TestCase):
         report.save_markdown(path, [finding()], STATS, shops=[shop_row()])
         with open(path, encoding="utf-8") as fh:
             md = fh.read()
-        self.assertIn("## Butikker med flest flaggede produkter", md)
+        self.assertIn("## Butikker med flest mistenkelige produkter", md)
         self.assertIn("3 av 6 produkter", md)
         path2 = os.path.join(self.tmp, "r2.md")
         report.save_markdown(path2, [], STATS)
