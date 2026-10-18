@@ -148,6 +148,23 @@ class BlackFriday(unittest.TestCase):
         self.assertEqual(analyze.black_friday(2024), "2024-11-29")
         self.assertEqual(analyze.black_friday(2019), "2019-11-29")
 
+class BfPhase(unittest.TestCase):
+    def test_phases_2026(self):
+        phase = lambda d: analyze.bf_phase(d)["phase"]
+        self.assertEqual(phase("2026-09-30"), "off")
+        self.assertEqual(phase("2026-10-01"), "warmup")
+        self.assertEqual(phase("2026-11-22"), "warmup")
+        self.assertEqual(phase("2026-11-23"), "black_week")     # Monday before Black Friday
+        self.assertEqual(phase("2026-11-30"), "black_week")     # Cyber Monday
+        self.assertEqual(phase("2026-12-01"), "after")
+        self.assertEqual(phase("2026-12-11"), "after")
+
+    def test_after_season_points_to_next_year(self):
+        p = analyze.bf_phase("2026-12-12")
+        self.assertEqual((p["phase"], p["bf"], p["days"]), ("off", "2027-11-26", 349))
+        self.assertEqual(analyze.bf_phase("2026-10-18")["days"], 40)
+
+
 class AnalyzeStore(unittest.TestCase):
     def test_findings_sorted_by_score(self):
         tmp = tempfile.mkdtemp()
@@ -402,3 +419,105 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- cheapest-price series "(laveste)" ----------------------------------------
+
+def lowest(rows, today=BF_DAY, confirm=None, baseline_end="2026-10-01"):
+    return dict(analyze.analyze_series(rows, today, None, baseline_end, lowest=True, confirm=confirm))
+
+
+def market_span(m, a, b, price):
+    for d, p, _, _ in span([], a, b, price):
+        m[d] = p
+    return m
+
+
+class LowestSeries(unittest.TestCase):
+    def test_cheapest_shop_sold_out_jump_is_not_a_hike(self):
+        # Roborock Q8 Max on the Pi: normal 3 990 kr, "hevet" to 9 006 kr on 16 Oct
+        rows = span([], "2026-08-01", "2026-10-15", 3990.0)
+        span(rows, "2026-10-16", "2026-10-18", 9006.0)
+        out = lowest(rows, today="2026-10-18")
+        self.assertNotIn("hike", out)
+        self.assertNotIn("fake_discount", out)
+        # a normal shop doing the same is still flagged
+        self.assertIn("hike", dict(analyze.analyze_series(rows, "2026-10-18", None, "2026-10-01")))
+
+    def test_jump_back_down_after_dropout_is_not_fake_discount(self):
+        # baseline with a one-off dip (Watch Ultra2: low 779 kr), dropout, then back to normal
+        rows = span([], "2026-08-01", "2026-09-29", 2990.0)
+        span(rows, "2026-09-30", "2026-09-30", 779.0)
+        span(rows, "2026-10-20", "2026-11-20", 6490.0)
+        span(rows, "2026-11-21", BF_DAY, 2990.0)
+        out = lowest(rows)
+        self.assertNotIn("fake_discount", out)
+        self.assertNotIn("hike", out)
+
+    def test_real_hikes_of_10_to_50_percent_still_flagged(self):
+        for pct in (10, 30, 50):
+            raised = 4000.0 * (1 + pct / 100.0)
+            rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+            span(rows, "2026-10-20", BF_DAY, raised)
+            self.assertIn("hike", lowest(rows), pct)
+            rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+            span(rows, "2026-10-20", "2026-11-23", raised)
+            span(rows, "2026-11-24", BF_DAY, 4000.0)
+            self.assertIn("fake_discount", lowest(rows), pct)
+
+    def test_cap_is_inclusive(self):
+        rows = span([], "2026-08-01", "2026-10-19", 1000.0)
+        span(rows, "2026-10-20", BF_DAY, 1000.0 * analyze.LOWEST_MAX_JUMP)
+        self.assertIn("hike", lowest(rows))
+        rows[-1] = rows[-1][:1] + (1000.0 * analyze.LOWEST_MAX_JUMP + 1,) + rows[-1][2:]
+        self.assertNotIn("hike", lowest(rows))
+
+    def test_deal_unaffected(self):
+        rows = span([], "2026-08-01", "2026-11-20", 1000.0)
+        span(rows, "2026-11-21", BF_DAY, 900.0)
+        self.assertIn("deal", lowest(rows))
+
+    def test_market_flat_vetoes_moderate_jump(self):
+        rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+        span(rows, "2026-10-20", BF_DAY, 5000.0)
+        m = market_span({}, "2026-08-01", BF_DAY, 5200.0)
+        self.assertNotIn("hike", lowest(rows, confirm=m))
+
+    def test_market_rise_confirms_even_a_big_jump(self):
+        rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+        span(rows, "2026-10-20", BF_DAY, 7000.0)
+        m = market_span({}, "2026-08-01", "2026-10-19", 4500.0)
+        market_span(m, "2026-10-20", BF_DAY, 7500.0)
+        self.assertIn("hike", lowest(rows, confirm=m))
+
+    def test_market_without_baseline_falls_back_to_cap(self):
+        # per-shop data only from 18 Oct: no market baseline yet, so the cap decides
+        rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+        span(rows, "2026-10-20", BF_DAY, 5000.0)
+        m = market_span({}, "2026-10-18", BF_DAY, 5200.0)
+        self.assertIn("hike", lowest(rows, confirm=m))
+        rows = span([], "2026-08-01", "2026-10-19", 4000.0)
+        span(rows, "2026-10-20", BF_DAY, 9000.0)
+        self.assertNotIn("hike", lowest(rows, confirm=m))
+
+    def test_analyze_store_guards_lowest_but_not_shops(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = Store(os.path.join(tmp, "a.sqlite"))
+        self.addCleanup(s.close)
+        today = "2026-10-18"
+        # shop S raises 3 990 -> 4 600 (15 %), T stays at 5 000; the cheapest series jumps to 9 006
+        # as if the cheapest shop dropped out. Market median rises only ~7 %, so no confirmation.
+        rows = span([], "2026-08-01", "2026-10-15", 3990.0)
+        span(rows, "2026-10-16", today, 4600.0)
+        for day, price, _, _ in rows:
+            offers = [{"shop": "S", "price": price, "original_price": None, "in_stock": True},
+                      {"shop": "T", "price": 5000.0, "original_price": None, "in_stock": True}]
+            s.save_product({"source": "prisjakt", "product_id": "p", "title": "p", "url": "u",
+                            "offers": offers, "lowest_history": [], "lowest_now": None}, day, category="tv")
+            low = 3990.0 if day < "2026-10-16" else 9006.0
+            s.db.execute("INSERT INTO prices (source, product_id, shop, day, price, original_price, in_stock) "
+                         "VALUES ('prisjakt', 'p', '(laveste)', ?, ?, NULL, 1)", (day, low))
+        found = [(f.shop, f.rule) for f in analyze.analyze(s, today)]
+        self.assertIn(("S", "hike"), found)
+        self.assertNotIn(("(laveste)", "hike"), found)

@@ -75,11 +75,41 @@ class Outputs(unittest.TestCase):
         self.assertIn("2 mistenkelige tilbud</b> hos 1 butikker", page)
         self.assertIn("<option value='mobil'>Mobil</option>", page)
         self.assertIn("data-rule='fake_discount' open", page)
-        self.assertIn("Var vanligvis 1 000 kr. Hevet til 1 300 kr 5. nov, nå «tilbud» 1 000 kr.", page)
+        self.assertIn("Var vanligvis 1 000 kr. Hevet til 1 300 kr 5. nov (22 dager før Black Friday), "
+                      "nå «tilbud» 1 000 kr.", page)
+        self.assertIn("Black Friday 27. nov</b> · i dag", page)
+        self.assertIn("Det er Black Week", page)
         self.assertIn("Oppgir før-pris 1 500 kr", page)
         self.assertIn("normalpris målt før 1. okt", page)
         self.assertIn("<b>Prishopp:</b> ingen funnet.", page)
         self.assertIn("href='files/bfa_report.csv'", page)   # relative, so it works under BASE_PATH
+
+    def test_html_warmup_leads_with_hikes(self):
+        fs = [finding(rule="hike", now=1300.0), finding(rule="deal", score=0.1, now=900.0),
+              finding(rule="fake_discount")]
+        page = report.html_page(fs, STATS, [], False, today="2026-10-18")
+        self.assertIn("Black Friday 27. nov</b> · om 40 dager", page)
+        self.assertIn("Nå er det oppkjøring", page)
+        self.assertIn("class='verdict warn'><b>1 priser er satt opp før Black Friday</b>", page)
+        self.assertIn("1 hevet og satt ned igjen", page)
+        self.assertIn("1 billigere enn i sommer", page)
+        self.assertNotIn("mistenkelige tilbud</b>", page)
+        self.assertIn("data-rule='hike' open><summary><h2>Hevet før Black Friday", page)
+        self.assertLess(page.index("data-rule='hike'"), page.index("data-rule='deal'"))
+
+    def test_html_off_season_has_countdown_only(self):
+        page = report.html_page([], dict(STATS, last_day="2027-03-01"), [], False)
+        self.assertIn("Black Friday 26. nov</b> · om 270 dager", page)
+        self.assertIn("Utenfor Black Friday-sesongen", page)
+        self.assertNotIn("class='tl'", page)
+
+    def test_bf_rel(self):
+        self.assertEqual(report.bf_rel("2026-11-26", "2026-11-27"), " (1 dag før Black Friday)")
+        self.assertEqual(report.bf_rel("2026-11-27", "2026-11-27"), " (på Black Friday)")
+        self.assertEqual(report.bf_rel("2026-11-30", "2026-11-27"), " (3 dager etter Black Friday)")
+        self.assertEqual(report.bf_rel("2026-07-01", "2026-11-27"), "")
+        self.assertEqual(report.countdown(1), "i morgen")
+        self.assertEqual(report.countdown(-2), "for 2 dager siden")
 
     def test_nice_baseline(self):
         self.assertEqual(report.nice_baseline("tidlig 10-18–10-31"), "kun 18. okt–31. okt (lite data)")
