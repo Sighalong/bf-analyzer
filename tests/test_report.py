@@ -125,8 +125,16 @@ class Outputs(unittest.TestCase):
     def test_html_off_season_has_countdown_only(self):
         page = report.html_page([], dict(STATS, last_day="2027-03-01"), [], False)
         self.assertIn("Black Friday 26. nov</b> · om 270 dager", page)
-        self.assertIn("Utenfor Black Friday-sesongen", page)
+        self.assertIn("Prisvakten sover og henter ingen priser nå. Den våkner 1. aug", page)
+        self.assertIn("Prisvakten sover til 1. aug", page)
+        self.assertIn("hver morgen fra 1. aug til nyttår", page)
         self.assertNotIn("class='tl'", page)
+
+    def test_html_off_season_texts(self):
+        page = lambda d: report.html_page([], dict(STATS, last_day=d), [], False)
+        self.assertIn("Utenfor Black Friday-sesongen", page("2027-09-15"))
+        self.assertIn("gjennom julesalget og romjula", page("2026-12-20"))
+        self.assertNotIn("sover", page("2026-12-31"))
 
     def test_bf_rel(self):
         self.assertEqual(report.bf_rel("2026-11-26", "2026-11-27"), " (1 dag før Black Friday)")

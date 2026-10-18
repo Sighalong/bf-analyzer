@@ -356,13 +356,26 @@ PHASE_TEXT = {
     "after": "Black Friday er over. Siden viser hva som skjedde, og sesongen avsluttes {end}.",
     "off": "Utenfor Black Friday-sesongen. Normalprisen er det butikken tok for 1–3 måneder siden. "
            "Sesongen starter {start}.",
+    "christmas": "Black Friday er over, men prisene følges gjennom julesalget og romjula. "
+                 "Prisvakten tar pause fra nyttår.",
+    "asleep": "Prisvakten sover og henter ingen priser nå. Den våkner {wake}, så normalprisen kan "
+              "måles før sesongen starter {start}.",
 }
+
+
+def _phase_key(ph, today):
+    if ph["phase"] != "off":
+        return ph["phase"]
+    if ph["wake"]:
+        return "asleep"
+    return "christmas" if today[5:7] == "12" else "off"
 
 
 def _timeline(ph, today):
     """Countdown and a bar from the season start to its end, with today and Black Friday marked."""
-    text = PHASE_TEXT[ph["phase"]].format(week=nice_day(ph["week_start"]), cyber=nice_day(ph["week_end"]),
-                                          end=nice_day(ph["end"]), start=nice_day(ph["start"]))
+    text = PHASE_TEXT[_phase_key(ph, today)].format(
+        week=nice_day(ph["week_start"]), cyber=nice_day(ph["week_end"]), end=nice_day(ph["end"]),
+        start=nice_day(ph["start"]), wake=nice_day(ph["wake"] or ph["start"]))
     head = "<p class='bfhead'><b>Black Friday {}</b> · {}</p>".format(nice_day(ph["bf"]), countdown(ph["days"]))
     if ph["phase"] == "off":
         return "<section class='bf'>{}<p class='sub'>{}</p></section>".format(head, text)
@@ -390,6 +403,9 @@ def _summary(findings, shops, ph):
     e = html.escape
     n = {rule: sum(1 for f in findings if f.rule == rule) for rule, _, _ in SECTIONS}
     titles = {rule: title for rule, title, _ in sections(ph["phase"])}
+    if not findings and ph["wake"]:
+        return ("<section class='verdict calm'><b>Ingen ferske priser.</b> Prisvakten sover til {} "
+                "og samler ikke inn før da.</section>").format(nice_day(ph["wake"]))
     if not findings:
         return ("<section class='verdict calm'><b>Ingen mistenkelige priser funnet ennå.</b> "
                 "Verktøyet bygger prishistorikk hver dag, og flere funn kommer nærmere Black Friday "
@@ -548,11 +564,13 @@ padding-top:10px;font-size:15px}}
 <span style="color:var(--peak)">● høyeste</span><span style="color:var(--now)">● nå</span>
 <span style="color:var(--claim)">┆ Black Friday</span></p></details>
 {filters}{shops}<div id="funn">{body}</div>
-<footer><p>Prisene hentes automatisk hver morgen. Sist oppdatert: {last}.</p>
+<footer><p>{auto} Sist oppdatert: {last}.</p>
 <form method="post" action="run"><button {disabled}>{btn}</button></form>
 <p>Last ned: </p><ul>{files}</ul></footer>{script}</body></html>""".format(
         products=e(str(stats.get("products", 0))), first=e(nice_day(stats.get("first_day")) or "–"),
         last=e(nice_day(stats.get("last_day")) or "–"),
+        auto=("Prisene hentes automatisk hver morgen fra {} til nyttår.".format(nice_day(ph["wake"]))
+              if ph["wake"] else "Prisene hentes automatisk hver morgen."),
         status=" · <b>henter priser nå …</b>" if running else "",
         verdict=_summary(findings, shops, ph), timeline=_timeline(ph, today), howto=_howto(ph), filters=_filters(findings), shops=_shops_table(shops),
         body="".join(secs), disabled="disabled" if running else "",

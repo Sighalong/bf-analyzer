@@ -165,6 +165,16 @@ class BfPhase(unittest.TestCase):
         self.assertEqual(analyze.bf_phase("2026-10-18")["days"], 40)
 
 
+class Asleep(unittest.TestCase):
+    def test_sleeps_from_new_year_to_august(self):
+        self.assertIsNone(analyze.asleep("2026-12-31"))         # romjul sales are still followed
+        self.assertEqual(analyze.asleep("2027-01-01"), "2027-08-01")
+        self.assertEqual(analyze.asleep("2027-07-31"), "2027-08-01")
+        self.assertIsNone(analyze.asleep("2027-08-01"))
+        self.assertIsNone(analyze.asleep("2026-10-18"))
+        self.assertEqual(analyze.bf_phase("2027-03-01")["wake"], "2027-08-01")
+
+
 class AnalyzeStore(unittest.TestCase):
     def test_findings_sorted_by_score(self):
         tmp = tempfile.mkdtemp()

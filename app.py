@@ -38,7 +38,7 @@ def _db_mtime(path):
 
 
 def _collect(args):
-    cmd = [sys.executable, "-m", "bfa", "run", "--format", "none"] + args
+    cmd = [sys.executable, "-m", "bfa", "run", "--format", "none", "--force"] + args   # a click means run now
     with open(os.path.join(OUTPUT_DIR, "last_run.log"), "w", encoding="utf-8") as log:
         res = subprocess.run(cmd, cwd=APP_DIR, stdout=log, stderr=subprocess.STDOUT)
     _last_run["code"] = res.returncode

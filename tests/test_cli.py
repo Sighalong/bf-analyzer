@@ -94,6 +94,18 @@ class ReportEndToEnd(unittest.TestCase):
         with open(os.path.join(self.tmp, "p.csv"), encoding="utf-8") as fh:
             self.assertEqual(len(list(csv.DictReader(fh))), 0)
 
+    def test_collect_sleeps_outside_season(self):
+        out = os.path.join(self.tmp, "o4")
+        with mock.patch.dict(os.environ, {"OUTPUT_DIR": out}), mock.patch.object(cli, "collect") as col, \
+                mock.patch.object(cli, "log") as log:
+            self.assertEqual(cli.main(["run", "--db", self.db, "--today", "2027-03-01", "--format", "none"]), 0)
+            self.assertFalse(col.called)
+            self.assertIn("våkner 2027-08-01", log.call_args[0][0])
+            self.assertFalse(os.path.exists(os.path.join(out, "bfa_report.csv")))
+            col.return_value = 0
+            cli.main(["collect", "--db", self.db, "--today", "2027-03-01", "--force", "--categories", "tv"])
+            self.assertTrue(col.called)
+
     def test_product_view(self):
         buf = io.StringIO()
         with mock.patch.dict(os.environ, {"OUTPUT_DIR": os.path.join(self.tmp, "o3")}), redirect_stdout(buf):

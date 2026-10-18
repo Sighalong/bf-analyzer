@@ -47,6 +47,10 @@ skade. Deretter:
   `http://<pi>:8080/bfpris/` uten nginx. Med nginx lytter appen bare på 127.0.0.1:8080,
   og nginx slipper bare inn maskiner på det lokale nettet (`pi/nginx-bfpris.conf`).
 - Innsamlingen går automatisk hver dag ca. kl. 06:30 (tilfeldig forsinkelse på inntil 30 min).
+- **Dvale:** fra nyttår til 1. august sover prisvakten. Timeren går fortsatt, men innsamlingen
+  avslutter med en gang uten å hente noe. Den våkner 1. august, så normalprisen (august–september)
+  er målt før sesongen starter 1. oktober, og følger prisene gjennom julesalget og romjula.
+  Nettsiden viser fortsatt fjorårets rapport og når den våkner. Knappen «Hent priser nå» henter likevel.
 - Se når neste kjøring er: `systemctl list-timers bf-analyzer-collect.timer`
 - Se loggen: `journalctl -u bf-analyzer-collect`
 - Start en innsamling med en gang: `sudo systemctl start bf-analyzer-collect.service`
@@ -77,6 +81,7 @@ betyr `run`.
 | `--baseline-end` | Hvor normalprisen slutter: `auto` (1. oktober i sesongen, ellers glidende), `rolling` eller en dato `ÅÅÅÅ-MM-DD`. |
 | `--top` | Antall rader i toppliste (standard 25). |
 | `--product kilde:id` | Vis prisserien per butikk for ett produkt. |
+| `--force` | Samle inn også mens prisvakten sover (nyttår til 1. august). |
 
 Miljøvariabler: `OUTPUT_DIR` (standard `./outputs`), og for nettsiden `PORT` (8080), `HOST` (0.0.0.0)
 og `BASE_PATH` (`/bfpris`; tom streng gir rot-adressen).
