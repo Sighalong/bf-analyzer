@@ -37,6 +37,8 @@ MIN_RECENT_DAYS = 3
 FALLBACK_DAYS = 14
 SEASON_START = (10, 1)      # month, day
 SEASON_TAIL_DAYS = 14       # season ends this long after Black Friday (covers Cyber Monday)
+WAKE = (8, 1)               # daily collection wakes here: the 1 Oct baseline needs August-September prices
+SLEEP = (1, 1)              # ... and sleeps from New Year, after the Christmas and romjul sales
 CHART_DAYS = 90
 LOWEST_MAX_JUMP = 1.6       # cheapest-price series: a bigger jump is a shop dropping out, not a hike
 
@@ -81,8 +83,8 @@ BLACK_WEEK = (-4, 3)        # Monday before Black Friday .. Cyber Monday, in day
 def bf_phase(today):
     """Where today sits relative to Black Friday.
 
-    Returns dict(phase, bf, days, start, week_start, week_end, end), days = days until Black Friday
-    (negative after). phase: 'warmup' (1 Oct .. before Black Week), 'black_week', 'after' (rest of
+    Returns dict(phase, bf, days, start, week_start, week_end, end, wake), days = days until Black Friday
+    (negative after), wake = asleep(today). phase: 'warmup' (1 Oct .. before Black Week), 'black_week', 'after' (rest of
     the season) or 'off' (rest of the year; bf is then the next Black Friday).
     """
     t = _day(today)
@@ -101,7 +103,14 @@ def bf_phase(today):
     else:
         phase = "after"
     return dict(phase=phase, bf=_fmt(bf), days=(bf - t).days, start=_fmt(start),
-                week_start=_fmt(week_start), week_end=_fmt(week_end), end=_fmt(end))
+                week_start=_fmt(week_start), week_end=_fmt(week_end), end=_fmt(end), wake=asleep(today))
+
+
+def asleep(today):
+    """Next wake-up day (YYYY-MM-DD) while collection sleeps (New Year to 1 August), else None."""
+    t = _day(today)
+    wake = datetime(t.year, *WAKE)
+    return _fmt(wake) if datetime(t.year, *SLEEP) <= t < wake else None
 
 
 def season_baseline_end(today, override=None):

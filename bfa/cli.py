@@ -138,6 +138,7 @@ def main(argv=None):
     ap.add_argument("--top", type=int, default=25)
     ap.add_argument("--format", choices=["text", "none"], default="text", help="print a summary after report")
     ap.add_argument("--product", help="show the per-shop series of one product: source:id")
+    ap.add_argument("--force", action="store_true", help="collect even while asleep (New Year to 1 August)")
     a = ap.parse_args(argv)
 
     net.DELAY_S = max(2.0, a.delay)
@@ -154,6 +155,12 @@ def main(argv=None):
                 rows = store.series(s, p, shop)
                 print("{} | {}: {}".format(title[:60], shop, " ".join(
                     "{}={}".format(d[5:], report.kr(pr)) for d, pr, _, _ in rows[-40:])))
+        return 0
+
+    wake = analyze.asleep(today)
+    if a.command in ("run", "collect") and wake and not a.force:
+        log("[zz] sover utenfor sesongen, våkner {} (bruk --force for å samle likevel)".format(wake))
+        store.close()
         return 0
 
     if a.command in ("run", "collect"):
