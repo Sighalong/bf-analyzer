@@ -71,7 +71,7 @@ def _build_page():
             key = (_db_mtime(store.path), net.today_oslo(), _run_lock.locked())
             findings = analyze.analyze(store, key[1])
             shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
-            page = report.html_page(findings, store.stats(), _files(), key[2], shops)
+            page = report.html_page(findings, store.stats(), _files(), key[2], shops, today=key[1])
         finally:
             store.close()
         _page_cache.update(key=key, page=page, at=time.time())

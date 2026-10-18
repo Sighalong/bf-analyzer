@@ -19,6 +19,11 @@ Rules:
   before_price    the shop's stated før-pris is above its own lowest price in the previous 30 days
                   (the reference the EU price-indication rule uses)
   deal            now is >= DEAL below the baseline low: a real price cut
+
+The site's cheapest-across-shops history (pseudo-shop "(laveste)") jumps whenever the cheapest
+shop sells out or drops off the listing, so hike / fake_discount there need more evidence: the
+per-shop market median must have risen >= HIKE too (once it covers the baseline), and without
+that data the peak may be at most LOWEST_MAX_JUMP x the baseline median.
 """
 from datetime import datetime, timedelta
 
@@ -33,6 +38,7 @@ FALLBACK_DAYS = 14
 SEASON_START = (10, 1)      # month, day
 SEASON_TAIL_DAYS = 14       # season ends this long after Black Friday (covers Cyber Monday)
 CHART_DAYS = 90
+LOWEST_MAX_JUMP = 1.6       # cheapest-price series: a bigger jump is a shop dropping out, not a hike
 
 
 class Finding(object):
@@ -69,6 +75,35 @@ def black_friday(year):
     return _fmt(first_thursday + timedelta(weeks=3, days=1))
 
 
+BLACK_WEEK = (-4, 3)        # Monday before Black Friday .. Cyber Monday, in days from Black Friday
+
+
+def bf_phase(today):
+    """Where today sits relative to Black Friday.
+
+    Returns dict(phase, bf, days, start, week_start, week_end, end), days = days until Black Friday
+    (negative after). phase: 'warmup' (1 Oct .. before Black Week), 'black_week', 'after' (rest of
+    the season) or 'off' (rest of the year; bf is then the next Black Friday).
+    """
+    t = _day(today)
+    bf = _day(black_friday(t.year))
+    if t > bf + timedelta(days=SEASON_TAIL_DAYS):
+        bf = _day(black_friday(t.year + 1))
+    start = datetime(bf.year, *SEASON_START)
+    week_start, week_end = bf + timedelta(days=BLACK_WEEK[0]), bf + timedelta(days=BLACK_WEEK[1])
+    end = bf + timedelta(days=SEASON_TAIL_DAYS)
+    if t < start:
+        phase = "off"
+    elif t < week_start:
+        phase = "warmup"
+    elif t <= week_end:
+        phase = "black_week"
+    else:
+        phase = "after"
+    return dict(phase=phase, bf=_fmt(bf), days=(bf - t).days, start=_fmt(start),
+                week_start=_fmt(week_start), week_end=_fmt(week_end), end=_fmt(end))
+
+
 def season_baseline_end(today, override=None):
     """Day the baseline ends (exclusive), or None for rolling windows.
 
@@ -99,9 +134,9 @@ def clean_rows(rows, market=None):
 
 
 def _windows(rows, t, baseline_end):
-    """Split cleaned rows into (baseline prices, recent rows, label)."""
+    """Split cleaned rows into (baseline rows, recent rows, label)."""
     if baseline_end is None:
-        base = [p for d, p, _ in rows if 31 <= (t - _day(d)).days <= 90]
+        base = [r for r in rows if 31 <= (t - _day(r[0])).days <= 90]
         recent = [r for r in rows if 0 <= (t - _day(r[0])).days <= 30]
         return base, recent, "dag 31–90"
     be = _day(baseline_end)
@@ -114,17 +149,35 @@ def _windows(rows, t, baseline_end):
             label = "tidlig {}–{}".format(base_rows[0][0][5:], base_rows[-1][0][5:])
     last_base = _day(base_rows[-1][0]) if base_rows else be - timedelta(days=1)
     recent = [r for r in rows if _day(r[0]) > last_base and 0 <= (t - _day(r[0])).days <= 60]
-    return [p for _, p, _ in base_rows], recent, label
+    return base_rows, recent, label
 
 
-def analyze_series(rows, today, market=None, baseline_end=None):
-    """rows: [(day, price, original_price, in_stock)] sorted by day. Returns [(rule, fields)]."""
+def _lowest_hike_ok(base_rows, peak_day, peak, base_med, confirm):
+    """Is a hike in the cheapest-price series real rather than the cheapest shop dropping out?
+
+    confirm: {day: per-shop market median}. Once it covers the baseline and the peak day, the
+    market must have risen as well; until then only jumps up to LOWEST_MAX_JUMP x pass.
+    """
+    if confirm:
+        base_m = [confirm[d] for d, _, _ in base_rows if d in confirm]
+        if len(base_m) >= MIN_BASELINE_DAYS and peak_day in confirm:
+            return confirm[peak_day] >= _median(base_m) * (1 + HIKE)
+    return peak <= base_med * LOWEST_MAX_JUMP
+
+
+def analyze_series(rows, today, market=None, baseline_end=None, lowest=False, confirm=None):
+    """rows: [(day, price, original_price, in_stock)] sorted by day. Returns [(rule, fields)].
+
+    lowest: rows are the cheapest-across-shops history; confirm is then {day: per-shop market
+    median} used to tell real hikes from the cheapest shop dropping out (see _lowest_hike_ok).
+    """
     t = _day(today)
     rows = clean_rows(rows, market)
     if not rows or rows[-1][0] != today:
         return []          # not listed (in stock) today: nothing to say about the current price
     now_day, now, claimed = rows[-1]
-    base, recent, label = _windows(rows, t, baseline_end)
+    base_rows, recent, label = _windows(rows, t, baseline_end)
+    base = [p for _, p, _ in base_rows]
     out = []
 
     if len(base) >= MIN_BASELINE_DAYS and len(recent) >= MIN_RECENT_DAYS:
@@ -133,7 +186,7 @@ def analyze_series(rows, today, market=None, baseline_end=None):
         info = dict(base_median=base_med, base_low=base_low, peak=peak, peak_day=peak_day, now=now,
                     days=len(base) + len(recent), baseline=label)
         hike = peak / base_med - 1 if base_med else 0
-        if hike >= HIKE:
+        if hike >= HIKE and (not lowest or _lowest_hike_ok(base_rows, peak_day, peak, base_med, confirm)):
             if now <= peak * (1 - DROP) and now >= base_low * (1 - NEAR_BASELINE):
                 out.append(("fake_discount", dict(info, score=hike)))
             elif now >= peak * (1 - DROP):
@@ -166,8 +219,10 @@ def analyze(store, today, baseline_end="auto"):
     for source, pid, shop, title, url, category in store.series_keys():
         rows = store.series(source, pid, shop)
         # the site's own cheapest-price history is already a market figure: no outlier check
-        mk = None if shop.startswith("(") else market.get((source, pid))
-        for rule, f in analyze_series(rows, today, mk, be):
+        lowest = shop.startswith("(")
+        mk = market.get((source, pid))
+        for rule, f in analyze_series(rows, today, None if lowest else mk, be,
+                                      lowest=lowest, confirm=mk if lowest else None):
             findings.append(Finding(rule=rule, source=source, product_id=pid, title=title, url=url,
                                     category=category, shop=shop, **f))
     findings.sort(key=lambda f: -f.score)

@@ -71,7 +71,7 @@ def main():
     s = build(os.path.join(tmp, "bfa.sqlite"), today)
     findings = analyze.analyze(s, today)
     shops = analyze.rank_shops(findings, s.shop_product_counts(today))
-    page = report.html_page(findings, s.stats(), ["bfa_report.csv", "bfa_report.md"], False, shops)
+    page = report.html_page(findings, s.stats(), ["bfa_report.csv", "bfa_report.md"], False, shops, today=today)
     s.close()
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(page)

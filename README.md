@@ -104,6 +104,9 @@ For hver butikk og produkt sammenlignes en **normalpris (grunnlag)** med prisene
 
 Støy filtreres bort før analysen: tilbud som er **utsolgt**, og tilbud som koster mer enn
 **2 × medianprisen** hos de andre butikkene samme dag (feilkoblede pakker, gamle priser).
+I Prisjakts «billigste butikk»-historikk regnes et prishopp bare når prisene hos butikkene
+også har steget, eller (før det finnes nok data per butikk) når hoppet er under 1,6 × normalprisen.
+Et større hopp er nesten alltid at den billigste butikken ble utsolgt.
 
 Flaggene:
 
@@ -115,6 +118,11 @@ Flaggene:
 Eksempel: en TV koster vanligvis 10 000 kr. I oktober heves prisen til 12 000 kr, og
 så er den plutselig «BF-tilbud» til 10 000 kr. Det er ingen reell rabatt (prisen er
 tilbake der den alltid var), og den flagges som **falsk rabatt**.
+
+**Tidslinje:** øverst viser nettsiden en nedtelling til Black Friday og hvor i sesongen vi er.
+Før Black Week (mandag før Black Friday til Cyber Monday) står **prisøkninger** først, fordi
+det er da en falsk Black Friday-rabatt forberedes. Under og etter Black Week står **falsk
+rabatt** først. Hvert funn sier hvor mange dager før Black Friday prisen ble hevet.
 
 **Butikkrangering:** rapporten viser også hvilke butikker som har flest flaggede
 produkter, som andel av produktene de selger blant dem vi følger. Webgrensesnittet

@@ -3,7 +3,7 @@ import csv
 import html
 from datetime import datetime
 
-from . import analyze
+from . import analyze, net
 
 RULES = [
     ("fake_discount", "Falsk rabatt: prisen ble hevet før Black Friday og så «satt ned» igjen"),
@@ -149,7 +149,7 @@ def chart_svg(f, w=240, h=56):
 # ---- dashboard -------------------------------------------------------------
 
 # rule -> (short title, one line on what it means). Order = importance.
-SECTIONS = [
+SECTIONS = [   # Black Week and after: the "discount" has happened, so a fake one is the headline
     ("fake_discount", "Falsk rabatt",
      "Prisen ble hevet i ukene før, og «tilbudet» tar den bare tilbake til vanlig pris. Sterkest mistanke."),
     ("before_price", "Villedende før-pris",
@@ -159,6 +159,24 @@ SECTIONS = [
     ("deal", "Ekte tilbud",
      "Prisen er tydelig lavere enn den har vært. Dette er gode kjøp."),
 ]
+WARMUP_SECTIONS = [   # before Black Week: a hike now is the set-up for a fake Black Friday discount
+    ("hike", "Hevet før Black Friday",
+     "Prisen er satt opp etter 1. oktober og ligger fortsatt høyt. Slik starter en falsk "
+     "Black Friday-rabatt: følg med om disse «settes ned» til Black Friday."),
+    ("fake_discount", "Hevet og satt ned igjen",
+     "Prisen ble satt opp etter 1. oktober og så ned igjen til omtrent vanlig pris. "
+     "En «kampanje» nå er ingen ekte rabatt."),
+    ("before_price", "Villedende før-pris",
+     "Butikken oppgir en før-pris som er høyere enn det den selv tok de siste 30 dagene."),
+    ("deal", "Billigere enn i sommer",
+     "Lavere enn før 1. oktober. Et vanlig tilbud, ikke knyttet til Black Friday."),
+]
+
+
+def sections(phase):
+    return WARMUP_SECTIONS if phase == "warmup" else SECTIONS
+
+
 CATEGORY_NAMES = {
     "tv": "TV", "mobil": "Mobil", "laptop": "Bærbar PC", "hodetelefoner": "Hodetelefoner",
     "skjerm": "PC-skjerm", "smartklokke": "Smartklokke", "robotstovsuger": "Robotstøvsuger",
@@ -196,8 +214,20 @@ def nice_baseline(label):
     return label
 
 
-def story(f):
-    """One plain sentence explaining the finding."""
+def bf_rel(day, bf):
+    """'(44 dager før Black Friday)' for a day in the season, '' otherwise."""
+    if not day or not bf:
+        return ""
+    n = (analyze._day(bf) - analyze._day(day)).days
+    if n == 0:
+        return " (på Black Friday)"
+    if abs(n) > 75:
+        return ""
+    return " ({} {} {} Black Friday)".format(abs(n), "dag" if abs(n) == 1 else "dager", "før" if n > 0 else "etter")
+
+
+def story(f, bf=None):
+    """One plain sentence explaining the finding. bf: Black Friday date, adds how far the hike was from it."""
     if f.rule == "before_price":
         return "Oppgir før-pris {} kr, men laveste pris de 30 dagene før var {} kr. Nå {} kr.".format(
             kr(f.claimed), kr(f.low30), kr(f.now))
@@ -205,15 +235,15 @@ def story(f):
         return "Var vanligvis rundt {} kr (laveste {} kr). Nå {} kr.".format(
             kr(f.base_median), kr(f.base_low), kr(f.now))
     now = "nå «tilbud» {} kr".format(kr(f.now)) if f.rule == "fake_discount" else "nå {} kr".format(kr(f.now))
-    return "Var vanligvis {} kr. Hevet til {} kr {}, {}.".format(
-        kr(f.base_median), kr(f.peak), nice_day(f.peak_day), now)
+    return "Var vanligvis {} kr. Hevet til {} kr {}{}, {}.".format(
+        kr(f.base_median), kr(f.peak), nice_day(f.peak_day), bf_rel(f.peak_day, bf), now)
 
 
 def shop_name(f):
     return "Billigste butikk (historikk)" if f.shop.startswith("(") else f.shop
 
 
-def _card(f):
+def _card(f, bf=None):
     e = html.escape
     meta = [e(f.source.capitalize()), e(category_name(f.category))]
     meta.append("{} dager med priser".format(f.days) if f.days else "mangler data")
@@ -225,32 +255,82 @@ def _card(f):
             "<div class='shop'>{shopname}</div><p>{story}</p><small>{meta}</small></div>"
             "<div class='badge' title='Endring'>{chg}</div><div class='chart'>{chart}</div></article>").format(
         r=f.rule, cat=e(f.category or ""), shop=e(shop_name(f)), q=e(text), url=e(f.url), title=e(f.title),
-        shopname=e(shop_name(f)), story=e(story(f)), meta=" · ".join(meta), chg=e(change(f)), chart=chart_svg(f))
+        shopname=e(shop_name(f)), story=e(story(f, bf)), meta=" · ".join(meta), chg=e(change(f)), chart=chart_svg(f))
 
 
-def _summary(findings, shops, stats):
+def countdown(days):
+    if days > 1:
+        return "om {} dager".format(days)
+    return {1: "i morgen", 0: "i dag"}.get(days, "for {} dager siden".format(-days))
+
+
+PHASE_TEXT = {
+    "warmup": "Nå er det oppkjøring. En butikk som vil lage en falsk Black Friday-rabatt, setter opp "
+              "prisen i disse ukene. Black Week starter {week}.",
+    "black_week": "Det er Black Week ({week} – Cyber Monday {cyber}). Nå vises det om «tilbudene» er ekte.",
+    "after": "Black Friday er over. Siden viser hva som skjedde, og sesongen avsluttes {end}.",
+    "off": "Utenfor Black Friday-sesongen. Normalprisen er det butikken tok for 1–3 måneder siden. "
+           "Sesongen starter {start}.",
+}
+
+
+def _timeline(ph, today):
+    """Countdown and a bar from the season start to its end, with today and Black Friday marked."""
+    text = PHASE_TEXT[ph["phase"]].format(week=nice_day(ph["week_start"]), cyber=nice_day(ph["week_end"]),
+                                          end=nice_day(ph["end"]), start=nice_day(ph["start"]))
+    head = "<p class='bfhead'><b>Black Friday {}</b> · {}</p>".format(nice_day(ph["bf"]), countdown(ph["days"]))
+    if ph["phase"] == "off":
+        return "<section class='bf'>{}<p class='sub'>{}</p></section>".format(head, text)
+    d = analyze._day
+    start, end = d(ph["start"]), d(ph["end"])
+    total = float((end - start).days)
+
+    def at(day):
+        return max(0.0, min(100.0, (d(day) - start).days / total * 100))
+    week0, week1 = at(ph["week_start"]), at(ph["week_end"]) + 100 / total
+    return ("<section class='bf'>{head}<div class='tl' role='img' aria-label='Black Friday-sesongen: oppkjøring "
+            "fra {s}, Black Week fra {w}, Black Friday {bf}. I dag er {t}.'>"
+            "<span class='seg warm' style='width:{w0:.1f}%'>Oppkjøring</span>"
+            "<span class='seg week' style='left:{w0:.1f}%;width:{ww:.1f}%'></span>"
+            "<span class='seg tail' style='left:{w1:.1f}%;width:{wt:.1f}%'></span>"
+            "<i class='bfmark' style='left:{b:.1f}%' title='Black Friday {bf}'></i><i class='now' style='left:{n:.1f}%'><b>i dag</b></i></div>"
+            "<div class='tlx'><span style='left:0'>{s}</span><span class='wk' style='left:{w1:.1f}%'>"
+            "Black Week {w}–{we}</span></div><p class='sub'>{text}</p></section>").format(
+        head=head, s=nice_day(ph["start"]), w=nice_day(ph["week_start"]), bf=nice_day(ph["bf"]),
+        t=nice_day(today), we=nice_day(ph["week_end"]), w0=week0, ww=week1 - week0, w1=week1, wt=100 - week1,
+        b=at(ph["bf"]) + 50 / total, n=at(today) + 50 / total, text=text)
+
+
+def _summary(findings, shops, ph):
     e = html.escape
     n = {rule: sum(1 for f in findings if f.rule == rule) for rule, _, _ in SECTIONS}
-    bad = n["fake_discount"] + n["before_price"]
+    titles = {rule: title for rule, title, _ in sections(ph["phase"])}
     if not findings:
-        year = int((stats.get("last_day") or "2026")[:4])
         return ("<section class='verdict calm'><b>Ingen mistenkelige priser funnet ennå.</b> "
                 "Verktøyet bygger prishistorikk hver dag, og flere funn kommer nærmere Black Friday "
-                "({}).</section>").format(nice_day(analyze.black_friday(year)))
-    shopset = {(f.source, f.shop) for f in findings
-               if f.rule in ("fake_discount", "before_price") and not f.shop.startswith("(")}
-    head = ("<b>{} mistenkelige tilbud</b> hos {} butikker".format(bad, len(shopset)) if bad
-            else "<b>Ingen falske rabatter funnet</b>")
-    extra = []
-    if n["hike"]:
-        extra.append("{} prishopp å følge med på".format(n["hike"]))
-    if n["deal"]:
-        extra.append("{} ekte tilbud".format(n["deal"]))
+                "({}).</section>").format(nice_day(ph["bf"]))
     worst = ", ".join("<button type='button' class='link' data-shop='{0}'>{0}</button>".format(e(r["shop"]))
                       for r in list(shops)[:3])
+    if ph["phase"] == "warmup":
+        # before Black Week the warning sign is a raised price; a "discount" now is not a Black Friday one
+        head = ("<b>{} priser er satt opp før Black Friday</b>".format(n["hike"]) if n["hike"]
+                else "<b>Ingen priser satt opp før Black Friday ennå</b>")
+        extra = ["{} {}".format(n[r], titles[r].lower()) for r in ("fake_discount", "before_price", "deal") if n[r]]
+        cls = " warn" if n["hike"] or n["before_price"] else " calm"
+    else:
+        bad = n["fake_discount"] + n["before_price"]
+        shopset = {(f.source, f.shop) for f in findings
+                   if f.rule in ("fake_discount", "before_price") and not f.shop.startswith("(")}
+        head = ("<b>{} mistenkelige tilbud</b> hos {} butikker".format(bad, len(shopset)) if bad
+                else "<b>Ingen falske rabatter funnet</b>")
+        extra = []
+        if n["hike"]:
+            extra.append("{} prishopp å følge med på".format(n["hike"]))
+        if n["deal"]:
+            extra.append("{} ekte tilbud".format(n["deal"]))
+        cls = "" if bad else " calm"
     return "<section class='verdict{}'>{}{}{}</section>".format(
-        "" if bad else " calm", head, "".join(" · " + x for x in extra),
-        "<br>Verst: " + worst if worst else "")
+        cls, head, "".join(" · " + x for x in extra), "<br>Verst: " + worst if worst else "")
 
 
 def _shops_table(shops):
@@ -309,32 +389,41 @@ run();})();
 </script>"""
 
 
-def html_page(findings, stats, files, running, shops=(), top=50):
+def _howto(ph):
+    lines = ["<li><b>{}</b>: {}</li>".format(html.escape(t), html.escape(w)) for _, t, w in sections(ph["phase"])]
+    lines.append("<li>Normalprisen er hva butikken tok for 1–3 måneder siden.</li>" if ph["phase"] == "off" else
+                 "<li>Normalprisen er hva butikken vanligvis tok, målt før sesongen startet 1. oktober.</li>")
+    return "\n".join(lines)
+
+
+def html_page(findings, stats, files, running, shops=(), top=50, today=None):
     e = html.escape
     shops = list(shops)
+    today = today or stats.get("last_day") or net.today_oslo()
+    ph = analyze.bf_phase(today)
     secs = []
-    for rule, title, why in SECTIONS:
+    for i, (rule, title, why) in enumerate(sections(ph["phase"])):
         rows = [f for f in findings if f.rule == rule][:top]
         if not rows:
             secs.append("<p class='none'><b>{}:</b> ingen funnet.</p>".format(e(title)))
             continue
         secs.append("<details class='sec' data-rule='{}'{}><summary><h2>{}</h2> <span class='n'>{}</span>"
                     "</summary><p class='why'>{}</p>{}<button type='button' class='more'>Vis alle {}</button>"
-                    "</details>".format(rule, " open" if rule == "fake_discount" else "", e(title), len(rows),
-                                         e(why), "".join(_card(f) for f in rows), len(rows)))
+                    "</details>".format(rule, " open" if i == 0 else "", e(title), len(rows),
+                                         e(why), "".join(_card(f, ph["bf"]) for f in rows), len(rows)))
     file_links = "".join("<li><a href='files/{0}'>{0}</a></li>".format(e(n)) for n in files)
     return """<!doctype html><html lang="nb"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Black Friday-prisvakt</title>
 <style>:root{{--bg:#fff;--fg:#1a1a1a;--muted:#595959;--rule:#ddd;--card:#f7f7f8;--link:#0645ad;--line:#2b6cb0;
---ref:#888;--claim:#c53030;--peak:#c05621;--now:#2f855a;--bad:#fde8e8;--badfg:#9b1c1c;--ok:#e6f4ea;--okfg:#1e6b34}}
+--ref:#888;--claim:#c53030;--peak:#c05621;--now:#2f855a;--bad:#fde8e8;--badfg:#9b1c1c;--ok:#e6f4ea;--okfg:#1e6b34;--warn:#fff4e0;--warnfg:#7a4100}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#121212;--fg:#e6e6e6;--muted:#b0b0b0;--rule:#333;--card:#1d1d1f;
 --link:#8ab4ff;--line:#63b3ed;--ref:#999;--claim:#fc8181;--peak:#f6ad55;--now:#68d391;--bad:#3b1d1d;--badfg:#ffb4b4;
---ok:#1c3324;--okfg:#9ae6b4}}}}
+--ok:#1c3324;--okfg:#9ae6b4;--warn:#3a2a12;--warnfg:#fbd38d}}}}
 *{{box-sizing:border-box}}body{{font:16px/1.45 system-ui,sans-serif;margin:0 auto;padding:16px;max-width:1000px;
 color:var(--fg);background:var(--bg)}}a{{color:var(--link)}}h1{{margin:0 0 4px;font-size:24px}}
 h2{{display:inline;font-size:19px;margin:0}}small,.why,.sub{{color:var(--muted)}}.sub{{margin:0 0 12px}}
 .verdict{{background:var(--bad);color:var(--badfg);padding:12px 14px;border-radius:8px;margin:12px 0}}
-.verdict.calm{{background:var(--ok);color:var(--okfg)}}.verdict .link{{color:inherit;font-weight:600}}
+.verdict.calm{{background:var(--ok);color:var(--okfg)}}.verdict.warn{{background:var(--warn);color:var(--warnfg)}}.bf{{margin:12px 0}}.bfhead{{font-size:18px;margin:0 0 8px}}.tl{{position:relative;height:26px;border-radius:6px;background:var(--card);overflow:visible}}.seg{{position:absolute;top:0;bottom:0;font-size:13px;line-height:26px;padding-left:6px;white-space:nowrap;overflow:hidden}}.seg.warm{{left:0;background:var(--warn);color:var(--warnfg);border-radius:6px 0 0 6px}}.seg.week{{background:var(--fg);color:var(--bg);font-weight:600}}.seg.tail{{background:var(--rule);border-radius:0 6px 6px 0}}.tl i{{position:absolute;top:-4px;bottom:-4px;width:0;border-left:3px solid}}.tl .bfmark{{border-color:var(--claim)}}.tl .now{{border-color:var(--line)}}.tl .now b{{position:absolute;top:-20px;left:0;transform:translateX(-50%);white-space:nowrap;font:600 12px system-ui;color:var(--line);font-style:normal}}.tlx{{position:relative;height:18px;font-size:12px;color:var(--muted);margin:2px 0 4px}}.tlx span{{position:absolute;transform:translateX(-50%);white-space:nowrap}}.tlx span:first-child{{transform:none}}.tlx .wk{{transform:translateX(-100%);font-weight:600;color:var(--fg)}}.tl{{margin-top:20px}}.verdict .link{{color:inherit;font-weight:600}}
 .how{{margin:12px 0}}.how ul{{margin:6px 0;padding-left:20px}}
 .filters{{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:end;margin:16px 0;padding:10px;
 border:1px solid var(--rule);border-radius:8px}}.filters label{{display:flex;flex-direction:column;font-size:14px}}
@@ -360,12 +449,9 @@ padding-top:10px;font-size:15px}}
 </head><body>
 <h1>Black Friday-prisvakt</h1>
 <p class="sub">{products} produkter fulgt · priser fra {first} til {last}{status}</p>
-{verdict}
+{timeline}{verdict}
 <details class="how"><summary>Slik leser du siden</summary><ul>
-<li><b>Falsk rabatt</b> og <b>villedende før-pris</b> er de sterkeste tegnene på lureri.</li>
-<li><b>Prishopp</b> er bare et varsel: prisen er hevet og kan bli «satt ned» til Black Friday.</li>
-<li><b>Ekte tilbud</b> er priser som faktisk er lavere enn før.</li>
-<li>Normalprisen er hva butikken vanligvis tok, målt før sesongen startet 1. oktober.</li>
+{howto}
 <li>Rapporten viser bare prisdata. Sjekk alltid selv før du konkluderer.</li></ul>
 <p class="key"><span style="color:var(--line)">━ pris</span><span style="color:var(--ref)">┅ normalpris</span>
 <span style="color:var(--claim)">┅ oppgitt før-pris</span><span style="color:var(--peak)">● høyeste</span>
@@ -377,6 +463,6 @@ padding-top:10px;font-size:15px}}
         products=e(str(stats.get("products", 0))), first=e(nice_day(stats.get("first_day")) or "–"),
         last=e(nice_day(stats.get("last_day")) or "–"),
         status=" · <b>henter priser nå …</b>" if running else "",
-        verdict=_summary(findings, shops, stats), filters=_filters(findings), shops=_shops_table(shops),
+        verdict=_summary(findings, shops, ph), timeline=_timeline(ph, today), howto=_howto(ph), filters=_filters(findings), shops=_shops_table(shops),
         body="".join(secs), disabled="disabled" if running else "",
         btn="Henter …" if running else "Hent priser nå", files=file_links, script=SCRIPT)
