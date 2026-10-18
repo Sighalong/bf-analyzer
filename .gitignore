@@ -1,0 +1,13 @@
+.venv/
+outputs/
+__pycache__/
+prisjakt_output.*
+
+# Private: collected data, logs and local settings stay on the machine
+*.sqlite
+*.sqlite-*
+*.log
+.env
+.DS_Store
+.claude/settings.local.json
+.claude/launch.json

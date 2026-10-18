@@ -1,0 +1,16 @@
+[Unit]
+Description=bf-analyzer daily price collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@DIR@
+Environment=OUTPUT_DIR=@DIR@/outputs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env python3 -m bfa run --format none
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=200M
+TimeoutStartSec=2h

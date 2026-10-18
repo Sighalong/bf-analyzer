@@ -3,23 +3,25 @@ services:
     name: prisjakt-agent
     env: docker
     plan: free
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./Dockerfile   # runs `python app.py`
     autoDeploy: true
+    # The price history (SQLite) lives on this persistent disk. Without it the
+    # history is lost on every deploy/restart and per-shop detection won't work.
     disk:
       name: output-disk
       mountPath: /app/outputs
       sizeGB: 1
 
-  # Optional: A separate Cron Job to trigger the web service periodically.
-  # Fill in YOUR_PUBLIC_WEB_URL below after first deploy (e.g., https://prisjakt-agent.onrender.com/run)
+  # Optional: a Cron Job that triggers a collection run on the web service once a day.
+  # Replace YOUR_PUBLIC_WEB_URL with the full URL incl. /run after the first deploy
+  # (e.g. https://prisjakt-agent.onrender.com/run). Optional query params:
+  # ?categories=tv&categories=mobil&max_per_category=10&max_products=60
+  # Cron Jobs do not share the web service disk, which is why this POSTs to /run
+  # (409 = a run is already in progress). History needs the persistent disk above.
   - type: cron
     name: prisjakt-agent-cron
     env: docker
     dockerfilePath: ./Dockerfile
-    schedule: "0 6 * * *" # every day at 06:00 UTC
-    # Command pings the web service /run endpoint to generate fresh files on the web service's disk
-    # Replace YOUR_PUBLIC_WEB_URL with your service URL (e.g., https://prisjakt-agent.onrender.com/run)
-    # You can also customize categories via query params like: ?categories=TV&categories=Hodetelefoner
-    # Note: Cron Jobs do not share the web service disk; that's why we trigger the web endpoint.
+    schedule: "0 5 * * *" # every day at 05:00 UTC
     command: |
-      bash -lc 'curl -X POST "YOUR_PUBLIC_WEB_URL" || true'
+      bash -lc 'curl -fsS -X POST "YOUR_PUBLIC_WEB_URL" || true'
