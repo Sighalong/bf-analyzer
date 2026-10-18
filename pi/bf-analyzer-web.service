@@ -9,6 +9,7 @@ User=@USER@
 WorkingDirectory=@DIR@
 Environment=OUTPUT_DIR=@DIR@/outputs
 Environment=PORT=8080
+Environment=HOST=@HOST@
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/env python3 app.py
 Restart=on-failure

@@ -34,11 +34,19 @@ RUN_USER="$(id -un)"
 mkdir -p "$DIR/outputs"
 echo "Installerer fra $DIR som bruker $RUN_USER"
 
+# Med nginx: appen lytter bare paa 127.0.0.1, og nginx viser den paa http://<pi>/bfpris/
+# (kun lokalt nett), ved siden av andre nettsider. Uten nginx: direkte paa port 8080.
+if [ -d /etc/nginx/sites-enabled ] && systemctl is-active --quiet nginx; then
+    WEB_HOST=127.0.0.1
+else
+    WEB_HOST=0.0.0.0
+fi
+
 UNITS="bf-analyzer-web.service bf-analyzer-collect.service bf-analyzer-collect.timer"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 for u in $UNITS; do
-    sed -e "s|@USER@|$RUN_USER|g" -e "s|@DIR@|$DIR|g" "$DIR/pi/$u" > "$TMP/$u"
+    sed -e "s|@USER@|$RUN_USER|g" -e "s|@DIR@|$DIR|g" -e "s|@HOST@|$WEB_HOST|g" "$DIR/pi/$u" > "$TMP/$u"
     sudo install -m 644 "$TMP/$u" "/etc/systemd/system/$u"
 done
 
@@ -48,8 +56,27 @@ sudo systemctl restart bf-analyzer-web.service
 sudo systemctl start bf-analyzer-collect.timer
 
 HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [ "$WEB_HOST" = 127.0.0.1 ]; then
+    NAMES="$(hostname) $(hostname).local $HOST"
+    sed -e "s|@NAMES@|$NAMES|g" "$DIR/pi/nginx-bfpris.conf" > "$TMP/nginx"
+    SITE=/etc/nginx/sites-available/bf-analyzer
+    OLD="$TMP/nginx.old"
+    [ -f "$SITE" ] && cp "$SITE" "$OLD"
+    sudo install -m 644 "$TMP/nginx" "$SITE"
+    sudo ln -sf "$SITE" /etc/nginx/sites-enabled/bf-analyzer
+    if sudo nginx -t >/dev/null 2>&1; then
+        sudo systemctl reload nginx
+        URL="http://$(hostname).local/bfpris/"
+    else
+        echo "Advarsel: nginx godtok ikke oppsettet, tar det bort igjen. Se: sudo nginx -t" >&2
+        if [ -f "$OLD" ]; then sudo install -m 644 "$OLD" "$SITE"; else sudo rm -f "$SITE" /etc/nginx/sites-enabled/bf-analyzer; fi
+        URL="(nginx-feil, se over)"
+    fi
+else
+    URL="http://${HOST:-<pi-adresse>}:8080/bfpris/"
+fi
 echo
-echo "Ferdig. Aapne i nettleseren:  http://${HOST:-<pi-adresse>}:8080"
+echo "Ferdig. Aapne i nettleseren:  $URL"
 echo "Neste planlagte innsamling:   systemctl list-timers bf-analyzer-collect.timer"
 echo "Kjor en innsamling na:        sudo systemctl start bf-analyzer-collect.service"
 echo "Logg:                         journalctl -u bf-analyzer-collect -f"
