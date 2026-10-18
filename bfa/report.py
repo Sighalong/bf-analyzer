@@ -322,7 +322,7 @@ def html_page(findings, stats, files, running, shops=(), top=50):
                     "</summary><p class='why'>{}</p>{}<button type='button' class='more'>Vis alle {}</button>"
                     "</details>".format(rule, " open" if rule == "fake_discount" else "", e(title), len(rows),
                                          e(why), "".join(_card(f) for f in rows), len(rows)))
-    file_links = "".join("<li><a href='/files/{0}'>{0}</a></li>".format(e(n)) for n in files)
+    file_links = "".join("<li><a href='files/{0}'>{0}</a></li>".format(e(n)) for n in files)
     return """<!doctype html><html lang="nb"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Black Friday-prisvakt</title>
 <style>:root{{--bg:#fff;--fg:#1a1a1a;--muted:#595959;--rule:#ddd;--card:#f7f7f8;--link:#0645ad;--line:#2b6cb0;
@@ -372,7 +372,7 @@ padding-top:10px;font-size:15px}}
 <span style="color:var(--now)">● nå</span></p></details>
 {filters}{shops}<div id="funn">{body}</div>
 <footer><p>Prisene hentes automatisk hver morgen. Sist oppdatert: {last}.</p>
-<form method="post" action="/run"><button {disabled}>{btn}</button></form>
+<form method="post" action="run"><button {disabled}>{btn}</button></form>
 <p>Last ned: </p><ul>{files}</ul></footer>{script}</body></html>""".format(
         products=e(str(stats.get("products", 0))), first=e(nice_day(stats.get("first_day")) or "–"),
         last=e(nice_day(stats.get("last_day")) or "–"),

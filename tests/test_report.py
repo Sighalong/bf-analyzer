@@ -79,7 +79,7 @@ class Outputs(unittest.TestCase):
         self.assertIn("Oppgir før-pris 1 500 kr", page)
         self.assertIn("normalpris målt før 1. okt", page)
         self.assertIn("<b>Prishopp:</b> ingen funnet.", page)
-        self.assertIn("/files/bfa_report.csv", page)
+        self.assertIn("href='files/bfa_report.csv'", page)   # relative, so it works under BASE_PATH
 
     def test_nice_baseline(self):
         self.assertEqual(report.nice_baseline("tidlig 10-18–10-31"), "kun 18. okt–31. okt (lite data)")

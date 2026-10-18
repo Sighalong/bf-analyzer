@@ -23,7 +23,7 @@ Resultatet havner i `outputs/` (`bfa.sqlite`, `bfa_report.csv`, `bfa_report.md`)
 Vil du se det i nettleseren?
 
 ```bash
-python3 app.py     # åpne http://localhost:8080
+python3 app.py     # åpne http://localhost:8080/bfpris/
 ```
 
 ## Raspberry Pi 1B
@@ -38,10 +38,14 @@ bash pi/install.sh
 ```
 
 Skriptet sjekker Python (≥ 3.7) og SQLite (≥ 3.24), lager `outputs/`, installerer
-og aktiverer systemd-enhetene og skriver ut adressen. Det kan kjøres på nytt uten
+og aktiverer systemd-enhetene og skriver ut adressen. Finnes **nginx** på Pi-en,
+legges nettsiden inn der som en egen undermappe, så den ikke tar plassen til andre
+nettsider på Pi-en. Det kan kjøres på nytt uten
 skade. Deretter:
 
-- Åpne `http://<pi>:8080` i nettleseren for rapporten.
+- Åpne `http://<pi>.local/bfpris/` i nettleseren for rapporten (med nginx), eller
+  `http://<pi>:8080/bfpris/` uten nginx. Med nginx lytter appen bare på 127.0.0.1:8080,
+  og nginx slipper bare inn maskiner på det lokale nettet (`pi/nginx-bfpris.conf`).
 - Innsamlingen går automatisk hver dag ca. kl. 06:30 (tilfeldig forsinkelse på inntil 30 min).
 - Se når neste kjøring er: `systemctl list-timers bf-analyzer-collect.timer`
 - Se loggen: `journalctl -u bf-analyzer-collect`
@@ -74,10 +78,13 @@ betyr `run`.
 | `--top` | Antall rader i toppliste (standard 25). |
 | `--product kilde:id` | Vis prisserien per butikk for ett produkt. |
 
-Miljøvariabler: `OUTPUT_DIR` (standard `./outputs`), og for nettsiden `PORT` (8080) og `HOST` (0.0.0.0).
+Miljøvariabler: `OUTPUT_DIR` (standard `./outputs`), og for nettsiden `PORT` (8080), `HOST` (0.0.0.0)
+og `BASE_PATH` (`/bfpris`; tom streng gir rot-adressen).
 
-Nettsiden har disse adressene: `/` (rapport), `/run` (POST eller GET, starter en
-innsamling i bakgrunnen; svarer 409 hvis en allerede pågår), `/status` og `/files/<navn>`.
+Nettsiden har disse adressene under `/bfpris`: `/bfpris/` (rapport), `/bfpris/run` (POST eller GET,
+starter en innsamling i bakgrunnen; svarer 409 hvis en allerede pågår), `/bfpris/status` og
+`/bfpris/files/<navn>`. `/` sender deg videre til `/bfpris/`. Rapporten bygges i bakgrunnen, så
+siden svarer med en gang også mens en innsamling pågår (den oppdateres minst hvert 5. minutt).
 
 Produkter som er funnet én gang, sjekkes på nytt hver dag i 45 dager. Det er slik
 prishistorikken per butikk bygges opp.

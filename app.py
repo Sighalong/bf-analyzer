@@ -1,31 +1,40 @@
 # app.py - tiny web UI for bf-analyzer (stdlib only, runs on a Raspberry Pi 1B)
-#   GET  /            latest analysis as HTML
-#   GET|POST /run     start a collection run in the background (one at a time)
-#   GET  /files/<n>   download a file from OUTPUT_DIR (reports, database)
-#   GET  /status      plain-text status
+# Everything lives under BASE_PATH (default /bfpris), so the app can sit behind a web server
+# such as nginx next to other sites (see pi/nginx-bfpris.conf):
+#   GET  /bfpris/            latest analysis as HTML ("/" and "/bfpris" redirect here)
+#   GET|POST /bfpris/run     start a collection run in the background (one at a time)
+#   GET  /bfpris/files/<n>   download a file from OUTPUT_DIR (reports, database)
+#   GET  /bfpris/status      plain-text status
 import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bfa import analyze, net, report
-from bfa.store import Store
+from bfa.store import Store, default_path
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.abspath(os.environ.get("OUTPUT_DIR", os.path.join(APP_DIR, "outputs")))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.environ["OUTPUT_DIR"] = OUTPUT_DIR
+BASE = os.environ.get("BASE_PATH", "/bfpris").rstrip("/")   # "" serves from the root
 
 _run_lock = threading.Lock()
 _last_run = {"code": None}
 _page_cache = {}
+_page_lock = threading.Lock()   # one page build at a time
+REBUILD_SECONDS = 300           # while a run writes to the database, rebuild at most this often
+WAIT_PAGE = ('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="10">'
+             '<title>Black Friday-prisvakt</title><p style="font-family:sans-serif">'
+             'Lager rapporten … Siden lastes på nytt av seg selv.</p>')
 
 
 def _db_mtime(path):
     # WAL mode writes go to the -wal file first
-    return max(os.path.getmtime(p) for p in (path, path + "-wal") if os.path.exists(p))
+    return max([os.path.getmtime(p) for p in (path, path + "-wal") if os.path.exists(p)] or [0])
 
 
 def _collect(args):
@@ -50,6 +59,26 @@ def start_run(query):
     return True
 
 
+def _files():
+    return sorted(n for n in os.listdir(OUTPUT_DIR) if not n.startswith(".") and not n.endswith(("-wal", "-shm")))
+
+
+def _build_page():
+    """Run the analysis and cache the page. The caller holds _page_lock."""
+    try:
+        store = Store()
+        try:
+            key = (_db_mtime(store.path), net.today_oslo(), _run_lock.locked())
+            findings = analyze.analyze(store, key[1])
+            shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
+            page = report.html_page(findings, store.stats(), _files(), key[2], shops)
+        finally:
+            store.close()
+        _page_cache.update(key=key, page=page, at=time.time())
+    finally:
+        _page_lock.release()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="text/html; charset=utf-8", extra=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -61,34 +90,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _files(self):
-        return sorted(n for n in os.listdir(OUTPUT_DIR) if not n.startswith(".") and not n.endswith(("-wal", "-shm")))
-
     def _index(self):
-        # Analysis takes seconds on a Pi 1B: cache it until the database (or the day) changes.
-        store = Store()
-        try:
-            key = (_db_mtime(store.path), net.today_oslo(), _run_lock.locked())
-            if _page_cache.get("key") != key:
-                findings = analyze.analyze(store, key[1])
-                shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
-                _page_cache.update(key=key, page=report.html_page(
-                    findings, store.stats(), self._files(), key[2], shops))
-        finally:
-            store.close()
-        return _page_cache["page"]
+        # Analysis takes ~40 s on a busy Pi 1B, longer than a browser waits. Serve the last page at
+        # once and rebuild it in the background when the database, the day or the run state changes.
+        key = (_db_mtime(default_path()), net.today_oslo(), _run_lock.locked())
+        old = _page_cache.get("key")
+        if old != key and (old is None or old[1:] != key[1:] or time.time() - _page_cache["at"] > REBUILD_SECONDS):
+            if _page_lock.acquire(blocking=False):
+                threading.Thread(target=_build_page, daemon=True).start()
+        return _page_cache.get("page", WAIT_PAGE)
+
+    def _sub(self, url):
+        """Path below BASE, or None outside it."""
+        p = url.path
+        if not p.startswith(BASE + "/"):
+            return None
+        return p[len(BASE):]
 
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
-        if url.path == "/":
+        if BASE and url.path in ("/", BASE):
+            return self._send(302, "", extra={"Location": BASE + "/"})
+        sub = self._sub(url)
+        if sub == "/":
             return self._send(200, self._index())
-        if url.path == "/status":
+        if sub == "/status":
             return self._send(200, "running: {}\nlast exit code: {}\noutput dir: {}\n".format(
                 _run_lock.locked(), _last_run["code"], OUTPUT_DIR), "text/plain; charset=utf-8")
-        if url.path == "/run":
+        if sub == "/run":
             return self._run(url)
-        if url.path.startswith("/files/"):
-            name = os.path.basename(urllib.parse.unquote(url.path[len("/files/"):]))
+        if sub and sub.startswith("/files/"):
+            name = os.path.basename(urllib.parse.unquote(sub[len("/files/"):]))
             path = os.path.join(OUTPUT_DIR, name)
             if not name or not os.path.isfile(path):
                 return self._send(404, "not found", "text/plain")
@@ -99,15 +131,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "not found", "text/plain")
 
     def do_POST(self):
-        url = urllib.parse.urlsplit(self.path)
-        if url.path == "/run":
-            return self._run(url)
+        if self._sub(urllib.parse.urlsplit(self.path)) == "/run":
+            return self._run(urllib.parse.urlsplit(self.path))
         return self._send(404, "not found", "text/plain")
 
     def _run(self, url):
         started = start_run(urllib.parse.parse_qs(url.query))
         if self.command == "POST" and "text/html" in self.headers.get("Accept", ""):
-            return self._send(303, "", extra={"Location": "/"})
+            return self._send(303, "", extra={"Location": BASE + "/"})
         return self._send(202 if started else 409,
                           "started\n" if started else "a run is already in progress\n", "text/plain")
 
@@ -118,7 +149,9 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", "8080"))
     host = os.environ.get("HOST", "0.0.0.0")
-    print("bf-analyzer on http://{}:{}  (OUTPUT_DIR={})".format(host, port, OUTPUT_DIR), flush=True)
+    print("bf-analyzer on http://{}:{}{}/  (OUTPUT_DIR={})".format(host, port, BASE, OUTPUT_DIR), flush=True)
+    _page_lock.acquire()
+    threading.Thread(target=_build_page, daemon=True).start()   # warm the cache before the first visit
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
