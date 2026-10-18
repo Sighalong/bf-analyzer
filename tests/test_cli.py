@@ -37,9 +37,12 @@ class ResolveCategories(unittest.TestCase):
 
     def test_every_alias_has_a_source_category(self):
         from bfa import klarna, prisjakt
+        from bfa import report
         for key in set(cli.ALIASES.values()):
-            self.assertIn(key, prisjakt.CATEGORIES)
-            self.assertIn(key, klarna.CATEGORIES)
+            # some categories exist on only one site (kamera: Klarna, skjermkort: Prisjakt)
+            self.assertTrue(key in prisjakt.CATEGORIES or key in klarna.CATEGORIES, key)
+            self.assertIn(key, report.CATEGORY_NAMES)
+        self.assertEqual(set(cli.ALIASES.values()), set(cli.DEFAULT_CATEGORIES))
 
 
 class ReportEndToEnd(unittest.TestCase):

@@ -60,10 +60,10 @@ betyr `run`.
 
 | Flagg | Betydning |
 |---|---|
-| `--categories` | `tv mobil laptop hodetelefoner skjerm smartklokke robotstovsuger nettbrett spillkonsoll`. Norske navn som «Bærbare PC-er» fungerer også. |
+| `--categories` | Standard er alle: `tv mobil laptop hodetelefoner skjerm smartklokke robotstovsuger nettbrett spillkonsoll kaffemaskin stovsuger soundbar hoyttaler kamera skjermkort lopesko jakke varmeovn parfyme`. Norske navn som «Bærbare PC-er» fungerer også. `kamera` finnes bare på Klarna; `skjermkort`, `lopesko`, `jakke`, `varmeovn` og `parfyme` bare på Prisjakt. |
 | `--sources` | `prisjakt`, `klarna` eller begge (standard). |
-| `--max-per-category` | Maks nye produkter per kategori (standard 12). |
-| `--max-products` | Maks produkter per kilde per kjøring (standard 120). |
+| `--max-per-category` | Maks nye produkter per kategori (standard 8). |
+| `--max-products` | Maks produkter per kilde per kjøring (standard 200; en full kjøring tar ca. 25 min per kilde på en Pi 1B). |
 | `--product-urls FIL` | Fil med produkt-URL-er, én per linje. |
 | `--min-price-nok` | Hopp over funn med pris under dette (standard 500). |
 | `--db` | SQLite-fil (standard `$OUTPUT_DIR/bfa.sqlite`). |

@@ -8,7 +8,9 @@ from . import analyze, klarna, net, prisjakt, report
 from .store import Store
 
 SOURCES = {"prisjakt": prisjakt, "klarna": klarna}
-DEFAULT_CATEGORIES = ["tv", "mobil", "laptop", "hodetelefoner", "skjerm", "smartklokke", "robotstovsuger"]
+DEFAULT_CATEGORIES = ["tv", "mobil", "laptop", "hodetelefoner", "skjerm", "smartklokke", "robotstovsuger",
+                      "nettbrett", "spillkonsoll", "kaffemaskin", "stovsuger", "soundbar", "hoyttaler",
+                      "kamera", "skjermkort", "lopesko", "jakke", "varmeovn", "parfyme"]
 
 ALIASES = {
     "tv": "tv", "tver": "tv",
@@ -21,6 +23,17 @@ ALIASES = {
     "robotstovsuger": "robotstovsuger", "robotstovsugere": "robotstovsuger",
     "nettbrett": "nettbrett",
     "spillkonsoll": "spillkonsoll", "spillkonsoller": "spillkonsoll",
+    "kaffemaskin": "kaffemaskin", "kaffemaskiner": "kaffemaskin", "espressomaskin": "kaffemaskin",
+    "espressomaskiner": "kaffemaskin",
+    "stovsuger": "stovsuger", "stovsugere": "stovsuger",
+    "soundbar": "soundbar", "lydplanke": "soundbar", "lydplanker": "soundbar",
+    "hoyttaler": "hoyttaler", "hoyttalere": "hoyttaler", "mobilhoyttalere": "hoyttaler",
+    "kamera": "kamera", "kameraer": "kamera", "digitalkameraer": "kamera",
+    "skjermkort": "skjermkort",
+    "lopesko": "lopesko", "joggesko": "lopesko",
+    "jakke": "jakke", "jakker": "jakke",
+    "varmeovn": "varmeovn", "varmeovner": "varmeovn",
+    "parfyme": "parfyme", "parfymer": "parfyme",
 }
 
 
@@ -112,8 +125,8 @@ def main(argv=None):
     ap.add_argument("--categories", nargs="*", action="append",
                     help="kategorier, f.eks. TV Mobiltelefoner 'Bærbare PC-er' (can be repeated)")
     ap.add_argument("--sources", nargs="*", default=list(SOURCES), choices=list(SOURCES))
-    ap.add_argument("--max-per-category", type=int, default=12)
-    ap.add_argument("--max-products", type=int, default=120, help="per source, per run")
+    ap.add_argument("--max-per-category", type=int, default=8)
+    ap.add_argument("--max-products", type=int, default=200, help="per source, per run")
     ap.add_argument("--product-urls", help="fil med produkt-URL-er (Prisjakt eller Klarna), én per linje")
     ap.add_argument("--min-price-nok", type=int, default=500, help="ignore findings where the price now is lower than this")
     ap.add_argument("--db", default=None, help="SQLite file (default $OUTPUT_DIR/bfa.sqlite)")

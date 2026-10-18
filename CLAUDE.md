@@ -12,7 +12,7 @@ Catches Black Friday price gouging in Norway: shops that raise a price in the we
 - **Klarna** (prisguide.no redirects here): `/no/shopping/cl/cl<ID>/<Name>/?page=N` category pages, `/no/shopping/pl/...` product pages. Per-shop offers are in JSON-LD `Product.offers.offers[]` (`price`, `seller.name`, `availability`). Price-history URLs are disallowed by robots.txt. There's no GTIN, so products aren't matched across sites.
 
 ## Model use (keep tokens low)
-- Delegate with the project agents in `.claude/agents/`: `site-prober` (haiku) for any page investigation, `pi-checker` (haiku) after code changes, `test-writer` (sonnet) for tests, `pi-deployer` (sonnet) for Pi setup, `deal-analyst` (haiku) for reading results.
+- Delegate with the project agents in `.claude/agents/`: `site-prober` (haiku) for any page investigation, `pi-checker` (haiku) after code changes, `test-writer` (sonnet) for tests, `pi-deployer` (sonnet) for Pi setup, `deal-analyst` (haiku) for reading results, `ux-reviewer` (sonnet) for dashboard clarity (design judgement needs more than haiku; opus not needed).
 - Keep design and detection-logic changes in the main session.
 - Never paste raw HTML or full DB dumps into the conversation. Use the skill scripts, which print summaries.
 

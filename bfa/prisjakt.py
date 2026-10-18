@@ -19,6 +19,16 @@ CATEGORIES = {
     "robotstovsuger": "robotstovsugere",
     "nettbrett": "nettbrett",
     "spillkonsoll": "spillkonsoller",
+    # added 2026-10-18 from the categories on Prisjakt's front page
+    "kaffemaskin": "espressomaskiner",
+    "stovsuger": "stovsugere",
+    "soundbar": "lydplanke",
+    "hoyttaler": "mobilhoyttalere",
+    "skjermkort": "skjermkort",
+    "lopesko": "lopesko",
+    "jakke": "jakker",
+    "varmeovn": "varmeovner",
+    "parfyme": "parfymer",
 }
 
 PRODUCT_RE = re.compile(r"product\.php\?p=(\d+)")

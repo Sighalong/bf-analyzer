@@ -5,13 +5,13 @@ Usage: python3 -I probe.py URL [--grep KEY ...] [--ctx 160] [--save FILE]
 Stdlib only, Python 3.7+.
 """
 import argparse
+import os
 import gzip
 import json
 import re
 import sys
 import urllib.parse
 import urllib.request
-import urllib.robotparser
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
@@ -32,12 +32,12 @@ def fetch(url):
 
 
 def robots_ok(url):
-    p = urllib.parse.urlsplit(url)
-    rp = urllib.robotparser.RobotFileParser()
-    rp.set_url("{}://{}/robots.txt".format(p.scheme, p.netloc))
+    # urllib.robotparser gets Prisjakt wrong (no wildcards, and Cloudflare 403s its user agent),
+    # so use the project's own matcher, as the collector does.
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+    from bfa import net
     try:
-        rp.read()
-        return rp.can_fetch("*", url)
+        return net.allowed(url)
     except Exception as e:
         return "unknown ({})".format(e)
 

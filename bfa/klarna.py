@@ -18,6 +18,12 @@ CATEGORIES = {
     "robotstovsuger": "/no/shopping/cl/cl1613/Robotstoevsugere/",
     "nettbrett": "/no/shopping/cl/cl224/Nettbrett/",
     "spillkonsoll": "/no/shopping/cl/cl52/Spillkonsoller/",
+    # added 2026-10-18 (no Klarna match found for skjermkort, lopesko, jakke, varmeovn, parfyme)
+    "kaffemaskin": "/no/shopping/cl/cl82/Kaffemaskiner/",
+    "stovsuger": "/no/shopping/cl/cl19/Stoevsugere/",
+    "soundbar": "/no/shopping/cl/cl86/Lydplanker-Hjemmekinopakker/",
+    "hoyttaler": "/no/shopping/cl/cl267/Hoeyttalere/",
+    "kamera": "/no/shopping/cl/cl29/Digitalkameraer/",
 }
 
 PRODUCT_RE = re.compile(r'(/no/shopping/pl/cl\d+/(\d+)/[^"\\?\s]*)')
