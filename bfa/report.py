@@ -100,50 +100,135 @@ def save_markdown(path, findings, stats, shops=(), top=25):
 
 # ---- evidence chart -------------------------------------------------------
 
-def chart_svg(f, w=240, h=56):
-    """Inline SVG of the shop's price series: baseline band, line, peak and today's price."""
+def _d(s):
+    return datetime.strptime(s, "%Y-%m-%d")
+
+
+def baseline_window(label, last_day):
+    """(first, last) day of the normal-price window from a finding's baseline label, or None."""
+    from datetime import timedelta
+    if not label:
+        return None
+    if label.startswith("før "):
+        end = _d(label[4:])
+        return end - timedelta(days=60), end - timedelta(days=1)
+    if label.startswith("tidlig ") and "–" in label:
+        a, b = label[7:].split("–")
+        y = last_day[:4]
+        return _d(y + "-" + a), _d(y + "-" + b)
+    if label.startswith("dag 31"):
+        t = _d(last_day)
+        return t - timedelta(days=90), t - timedelta(days=31)
+    return None
+
+
+def chart_svg(f, w=320, h=132, bf=None):
+    """Inline SVG of the shop's price series with date and price axes.
+
+    Shaded band = the days the normal price is measured from, dashed line = normal price,
+    dots = highest price and today's price, red line = Black Friday when it is inside the range.
+    """
     pts = f.series or []
     if len(pts) < 2:
         return ""
-    t0 = datetime.strptime(pts[0][0], "%Y-%m-%d")
-    xs = [(datetime.strptime(d, "%Y-%m-%d") - t0).days for d, _ in pts]
-    refs = [v for v in (f.base_median, f.base_low, f.claimed, f.low30) if v]
+    t0, t1 = _d(pts[0][0]), _d(pts[-1][0])
+    end = t1                                     # before Black Friday: run the axis up to it
+    if bf and 0 < (_d(bf) - t1).days <= 60:
+        end = _d(bf)
+    days = float(max((end - t0).days, 1))
+    refs = [v for v in (f.base_median, f.claimed) if v]
     lo = min([p for _, p in pts] + refs)
     hi = max([p for _, p in pts] + refs)
-    span_x = float(max(xs[-1], 1))
-    span_y = float(hi - lo) or 1.0
-    pad = 4
+    if hi - lo < hi * 0.02:                      # flat series: give it some room
+        lo, hi = lo * 0.98, hi * 1.02
+    L, R, T, B = 64, 10, 18, 20                 # room for price labels left, peak label top, dates below
 
-    def X(x):
-        return pad + (w - 2 * pad) * x / span_x
+    def X(day):
+        return L + (w - L - R) * (_d(day) - t0).days / days
 
     def Y(p):
-        return pad + (h - 2 * pad) * (1 - (p - lo) / span_y)
+        return T + (h - T - B) * (1 - (p - lo) / float(hi - lo))
 
-    # step line: a price holds until the next observation
-    path = "M{:.1f},{:.1f}".format(X(xs[0]), Y(pts[0][1]))
-    for i in range(1, len(pts)):
-        path += " H{:.1f} V{:.1f}".format(X(xs[i]), Y(pts[i][1]))
-    parts = ['<svg class="ch" viewBox="0 0 {0} {1}" width="{0}" height="{1}" role="img" aria-label="{2}">'.format(
+    def label(x, y, txt, cls="lb", anchor="middle"):
+        if anchor == "middle":                  # keep centred labels inside the chart
+            half = len(txt) * 2.9
+            x = max(L + half, min(w - R - half, x))
+        return '<text class="{}" x="{:.1f}" y="{:.1f}" text-anchor="{}">{}</text>'.format(
+            cls, x, y, anchor, html.escape(txt))
+
+    out = ['<svg class="ch" viewBox="0 0 {0} {1}" width="{0}" height="{1}" role="img" aria-label="{2}">'.format(
         w, h, html.escape("Pris {} til {}: {}nå {} kr".format(
             nice_day(pts[0][0]), nice_day(pts[-1][0]),
-            "normal {} kr, høyeste {} kr, ".format(kr(f.base_median), kr(f.peak)) if f.base_median and f.peak else "",
-            kr(pts[-1][1]))))]
+            "normal {} kr, høyeste {} kr {}, ".format(kr(f.base_median), kr(f.peak), nice_day(f.peak_day))
+            if f.base_median and f.peak else "", kr(pts[-1][1]))))]
+    # normal-price window
+    win = baseline_window(f.baseline, pts[-1][0])
+    if win:
+        a, b = max(win[0], t0), min(win[1], t1)
+        if a < b:
+            xa, xb = X(a.strftime("%Y-%m-%d")), X(b.strftime("%Y-%m-%d"))
+            out.append('<rect class="base" x="{:.1f}" y="{}" width="{:.1f}" height="{}"><title>normalpris målt '
+                       '{}–{}</title></rect>'.format(xa, T, xb - xa, h - T - B, nice_day(a.strftime("%Y-%m-%d")),
+                                                    nice_day(b.strftime("%Y-%m-%d"))))
+            if xb - xa > 60:
+                out.append(label((xa + xb) / 2, T + 11, "normalpris målt", "lb soft"))
+    # price axis: top and bottom of the range
+    for v in (hi, lo):
+        out.append('<line class="grid" x1="{}" x2="{}" y1="{:.1f}" y2="{:.1f}"/>'.format(L, w - R, Y(v), Y(v)))
+        out.append(label(L - 4, Y(v) + 4, kr(v) + " kr", anchor="end"))
+    # date axis: today (and Black Friday when the axis runs to it) always, month starts where they fit
+    xt = X(pts[-1][0])
+    if end > t1:
+        out.append('<rect class="fut" x="{:.1f}" y="{}" width="{:.1f}" height="{}"><title>fram til Black Friday'
+                   '</title></rect>'.format(xt, T, w - R - xt, h - T - B))
+        dates = [(xt, nice_day(pts[-1][0]), "lb strong", "middle"), (w - R, nice_day(bf), "lb bft", "end")]
+    else:
+        dates = [(w - R, nice_day(pts[-1][0]), "lb strong", "end")]
+    m = datetime(t0.year, t0.month, 1)
+    while m <= end:
+        if t0 < m < end:
+            day = m.strftime("%Y-%m-%d")
+            out.append('<line class="grid" x1="{0:.1f}" x2="{0:.1f}" y1="{1}" y2="{2}"/>'.format(X(day), T, h - B))
+            dates.append((X(day), nice_day(day), "lb", "middle"))
+        m = datetime(m.year + (m.month == 12), m.month % 12 + 1, 1)
+    taken = []
+    for x, txt, cls, anchor in dates:
+        half = len(txt) * 3.0 + 2            # 11px text is about 6px per character
+        lo_x, hi_x = (x - 2 * half, x) if anchor == "end" else (x - half, x + half)
+        if all(hi_x < a or lo_x > b for a, b in taken):
+            taken.append((lo_x, hi_x))
+            out.append(label(x, h - 5, txt, cls, anchor))
+    if bf and t0 <= _d(bf) <= end:
+        out.append('<line class="bfl" x1="{0:.1f}" x2="{0:.1f}" y1="{1}" y2="{2}"><title>Black Friday</title>'
+                   '</line>'.format(X(bf), T, h - B))
+        out.append(label(X(bf), T - 6, "BF", "lb bft"))
     if f.base_median:
-        parts.append('<line class="ref" x1="0" x2="{}" y1="{:.1f}" y2="{:.1f}"><title>normal {} kr</title></line>'.format(
-            w, Y(f.base_median), Y(f.base_median), kr(f.base_median)))
+        y = Y(f.base_median)
+        out.append('<line class="ref" x1="{}" x2="{}" y1="{:.1f}" y2="{:.1f}"><title>normal {} kr</title></line>'.format(
+            L, w - R, y, y, kr(f.base_median)))
+        out.append(label(L - 4, y + 4, kr(f.base_median) + " kr", "lb refl", "end")
+                   if abs(y - Y(hi)) > 12 and abs(y - Y(lo)) > 12 else "")
     if f.claimed:
-        parts.append('<line class="claim" x1="0" x2="{}" y1="{:.1f}" y2="{:.1f}"><title>før-pris {} kr</title></line>'.format(
-            w, Y(f.claimed), Y(f.claimed), kr(f.claimed)))
-    parts.append('<path class="ln" d="{}"/>'.format(path))
-    if f.peak and f.peak_day:
-        px = (datetime.strptime(f.peak_day, "%Y-%m-%d") - t0).days
-        parts.append('<circle class="pk" cx="{:.1f}" cy="{:.1f}" r="3"><title>topp {} kr</title></circle>'.format(
-            X(px), Y(f.peak), kr(f.peak)))
-    parts.append('<circle class="now" cx="{:.1f}" cy="{:.1f}" r="3"><title>nå {} kr</title></circle>'.format(
-        X(xs[-1]), Y(pts[-1][1]), kr(pts[-1][1])))
-    parts.append("</svg>")
-    return "".join(parts)
+        y = Y(f.claimed)
+        out.append('<line class="claim" x1="{}" x2="{}" y1="{:.1f}" y2="{:.1f}"><title>før-pris {} kr</title></line>'.format(
+            L, w - R, y, y, kr(f.claimed)))
+        out.append(label(w - R, y - 4, "oppgitt før-pris " + kr(f.claimed) + " kr", "lb claiml", "end"))
+    path = "M{:.1f},{:.1f}".format(X(pts[0][0]), Y(pts[0][1]))
+    for d, p in pts[1:]:                         # step line: a price holds until the next observation
+        path += " H{:.1f} V{:.1f}".format(X(d), Y(p))
+    out.append('<path class="ln" d="{}"/>'.format(path))
+    if f.peak and f.peak_day and f.peak_day >= pts[0][0]:
+        x, y = X(f.peak_day), Y(f.peak)
+        out.append('<circle class="pk" cx="{:.1f}" cy="{:.1f}" r="3.5"><title>høyeste {} kr</title></circle>'.format(
+            x, y, kr(f.peak)))
+        out.append(label(x, y - 7, "{} kr {}".format(kr(f.peak), nice_day(f.peak_day)), "lb pkl"))
+    x, y = X(pts[-1][0]), Y(pts[-1][1])
+    out.append('<circle class="now" cx="{:.1f}" cy="{:.1f}" r="3.5"><title>nå {} kr</title></circle>'.format(
+        x, y, kr(pts[-1][1])))
+    if not (f.peak and abs(f.peak - pts[-1][1]) < 1):
+        out.append(label(x - 6, y + (14 if y < h - B - 14 else -8), "nå " + kr(pts[-1][1]) + " kr", "lb nowl", "end"))
+    out.append("</svg>")
+    return "".join(out)
 
 
 # ---- dashboard -------------------------------------------------------------
@@ -255,7 +340,7 @@ def _card(f, bf=None):
             "<div class='shop'>{shopname}</div><p>{story}</p><small>{meta}</small></div>"
             "<div class='badge' title='Endring'>{chg}</div><div class='chart'>{chart}</div></article>").format(
         r=f.rule, cat=e(f.category or ""), shop=e(shop_name(f)), q=e(text), url=e(f.url), title=e(f.title),
-        shopname=e(shop_name(f)), story=e(story(f, bf)), meta=" · ".join(meta), chg=e(change(f)), chart=chart_svg(f))
+        shopname=e(shop_name(f)), story=e(story(f, bf)), meta=" · ".join(meta), chg=e(change(f)), chart=chart_svg(f, bf=bf))
 
 
 def countdown(days):
@@ -415,10 +500,10 @@ def html_page(findings, stats, files, running, shops=(), top=50, today=None):
     return """<!doctype html><html lang="nb"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Black Friday-prisvakt</title>
 <style>:root{{--bg:#fff;--fg:#1a1a1a;--muted:#595959;--rule:#ddd;--card:#f7f7f8;--link:#0645ad;--line:#2b6cb0;
---ref:#888;--claim:#c53030;--peak:#c05621;--now:#2f855a;--bad:#fde8e8;--badfg:#9b1c1c;--ok:#e6f4ea;--okfg:#1e6b34;--warn:#fff4e0;--warnfg:#7a4100}}
+--ref:#888;--claim:#c53030;--peak:#c05621;--now:#2f855a;--bad:#fde8e8;--badfg:#9b1c1c;--ok:#e6f4ea;--okfg:#1e6b34;--warn:#fff4e0;--warnfg:#7a4100;--band:#e6edf6}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#121212;--fg:#e6e6e6;--muted:#b0b0b0;--rule:#333;--card:#1d1d1f;
 --link:#8ab4ff;--line:#63b3ed;--ref:#999;--claim:#fc8181;--peak:#f6ad55;--now:#68d391;--bad:#3b1d1d;--badfg:#ffb4b4;
---ok:#1c3324;--okfg:#9ae6b4;--warn:#3a2a12;--warnfg:#fbd38d}}}}
+--ok:#1c3324;--okfg:#9ae6b4;--warn:#3a2a12;--warnfg:#fbd38d;--band:#1f2c3a}}}}
 *{{box-sizing:border-box}}body{{font:16px/1.45 system-ui,sans-serif;margin:0 auto;padding:16px;max-width:1000px;
 color:var(--fg);background:var(--bg)}}a{{color:var(--link)}}h1{{margin:0 0 4px;font-size:24px}}
 h2{{display:inline;font-size:19px;margin:0}}small,.why,.sub{{color:var(--muted)}}.sub{{margin:0 0 12px}}
@@ -433,19 +518,24 @@ button.link{{border:0;padding:0;background:none;color:var(--link);text-decoratio
 .sec{{margin:14px 0;border-top:1px solid var(--rule);padding-top:10px}}summary{{cursor:pointer}}
 .n{{display:inline-block;min-width:26px;text-align:center;padding:1px 8px;border-radius:12px;background:var(--card);
 font-weight:600}}.none{{color:var(--muted);margin:8px 0}}
-.card{{display:grid;grid-template-columns:1fr auto 240px;gap:6px 14px;align-items:start;background:var(--card);
+.card{{display:grid;grid-template-columns:1fr auto 320px;gap:6px 14px;align-items:start;background:var(--card);
 border-radius:8px;padding:10px 12px;margin:8px 0}}.card p{{margin:4px 0}}.t{{font-weight:600}}
 .shop{{font-weight:600}}.badge{{font-size:20px;font-weight:700;white-space:nowrap;color:var(--badfg)}}
 .deal .badge{{color:var(--okfg)}}.more{{margin:4px 0}}
 table{{border-collapse:collapse;width:100%;font-size:15px}}td,th{{border-bottom:1px solid var(--rule);
 padding:6px;text-align:left;vertical-align:top}}.num{{white-space:nowrap}}.sr{{position:absolute;left:-9999px}}
-.ch .ln{{fill:none;stroke:var(--line);stroke-width:1.5}}.ch .ref{{stroke:var(--ref);stroke-dasharray:3 3}}
+.ch .ln{{fill:none;stroke:var(--line);stroke-width:2}}.ch .ref{{stroke:var(--ref);stroke-dasharray:4 3}}
 .ch .claim{{stroke:var(--claim);stroke-dasharray:5 2}}.ch .pk{{fill:var(--peak)}}.ch .now{{fill:var(--now)}}
-.ch{{width:100%;max-width:240px;height:auto;display:block}}.key{{font-size:14px;color:var(--muted)}}
+.ch .grid{{stroke:var(--rule);stroke-width:1}}.ch .base{{fill:var(--band)}}.ch .fut{{fill:none;stroke:var(--rule);stroke-dasharray:3 4}}
+.ch .bfl{{stroke:var(--claim);stroke-width:1.5;stroke-dasharray:2 2}}
+.ch text{{font:11px system-ui,sans-serif;fill:var(--muted);paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round}}.ch .strong{{font-weight:600;fill:var(--fg)}}
+.ch .pkl{{fill:var(--peak);font-weight:600}}.ch .nowl{{fill:var(--now);font-weight:600}}
+.ch .claiml{{fill:var(--claim)}}.ch .bft{{fill:var(--claim);font-weight:600}}.ch .soft{{font-size:10px}}
+.ch{{width:100%;max-width:320px;height:auto;display:block}}.key{{font-size:14px;color:var(--muted)}}
 .key span{{margin-right:12px;white-space:nowrap}}footer{{margin-top:28px;border-top:1px solid var(--rule);
 padding-top:10px;font-size:15px}}
 @media (max-width:640px){{.card{{grid-template-columns:1fr auto}}.chart{{grid-column:1/-1}}
-.ch{{max-width:none}}table{{font-size:14px}}}}</style>
+.ch{{max-width:480px}}table{{font-size:14px}}}}</style>
 </head><body>
 <h1>Black Friday-prisvakt</h1>
 <p class="sub">{products} produkter fulgt · priser fra {first} til {last}{status}</p>
@@ -454,8 +544,9 @@ padding-top:10px;font-size:15px}}
 {howto}
 <li>Rapporten viser bare prisdata. Sjekk alltid selv før du konkluderer.</li></ul>
 <p class="key"><span style="color:var(--line)">━ pris</span><span style="color:var(--ref)">┅ normalpris</span>
-<span style="color:var(--claim)">┅ oppgitt før-pris</span><span style="color:var(--peak)">● høyeste</span>
-<span style="color:var(--now)">● nå</span></p></details>
+<span>▒ dagene normalprisen er målt</span><span style="color:var(--claim)">┅ oppgitt før-pris</span>
+<span style="color:var(--peak)">● høyeste</span><span style="color:var(--now)">● nå</span>
+<span style="color:var(--claim)">┆ Black Friday</span></p></details>
 {filters}{shops}<div id="funn">{body}</div>
 <footer><p>Prisene hentes automatisk hver morgen. Sist oppdatert: {last}.</p>
 <form method="post" action="run"><button {disabled}>{btn}</button></form>

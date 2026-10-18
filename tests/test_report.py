@@ -26,6 +26,31 @@ def shop_row(shop="Butikk"):
 
 
 class ChartSvg(unittest.TestCase):
+    def test_axes_have_dates_and_prices(self):
+        pts = [("2026-09-10", 1000.0), ("2026-10-05", 1300.0), ("2026-10-20", 1300.0)]
+        svg = report.chart_svg(finding(series=pts, peak_day="2026-10-05", now=1300.0))
+        self.assertIn(">1. okt</text>", svg)                       # month tick
+        self.assertIn(">20. okt</text>", svg)                      # last day
+        self.assertIn(">1 300 kr</text>", svg)                     # price axis
+        self.assertIn(">1 300 kr 5. okt</text>", svg)              # peak label
+        self.assertIn('class="base"', svg)                         # normal-price window band
+
+    def test_axis_runs_to_black_friday_before_it(self):
+        pts = [("2026-09-10", 1000.0), ("2026-10-20", 1300.0)]
+        svg = report.chart_svg(finding(series=pts, peak_day="2026-10-20"), bf="2026-11-27")
+        self.assertIn('class="bfl"', svg)
+        self.assertIn(">27. nov</text>", svg)
+        self.assertIn('class="fut"', svg)
+        far = report.chart_svg(finding(series=pts, peak_day="2026-10-20"), bf="2027-11-26")
+        self.assertNotIn('class="bfl"', far)
+
+    def test_baseline_window(self):
+        self.assertEqual([d.strftime("%m-%d") for d in report.baseline_window("før 2026-10-01", "2026-10-20")],
+                         ["08-02", "09-30"])
+        self.assertEqual([d.strftime("%m-%d") for d in report.baseline_window("tidlig 10-18–10-31", "2026-11-05")],
+                         ["10-18", "10-31"])
+        self.assertIsNone(report.baseline_window("30 dager", "2026-11-05"))
+
     def test_empty_for_fewer_than_two_points(self):
         self.assertEqual(report.chart_svg(finding(series=[])), "")
         self.assertEqual(report.chart_svg(finding(series=None)), "")
