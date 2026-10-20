@@ -528,7 +528,7 @@ def _howto(ph):
     return "\n".join(lines)
 
 
-def html_page(findings, stats, files, running, shops=(), top=50, today=None):
+def html_page(findings, stats, files, running, shops=(), top=50, today=None, data_day=None):
     e = html.escape
     shops = list(shops)
     today = today or stats.get("last_day") or net.today_oslo()
@@ -617,7 +617,9 @@ padding-top:10px;font-size:15px}}
         last=e(nice_day(stats.get("last_day")) or "–"),
         auto=("Prisene hentes automatisk hver morgen fra {} til nyttår.".format(nice_day(ph["wake"]))
               if ph["wake"] else "Prisene hentes automatisk hver morgen."),
-        status=" · <b>henter priser nå …</b>" if running else "",
+        status=(" · <b>henter priser nå …</b>" if running else "") + (
+            " · <b>funnene gjelder prisene fra {}</b>, dagens priser hentes i løpet av morgenen".format(
+                e(nice_day(data_day))) if data_day and data_day != today else ""),
         verdict=_summary(findings, shops, ph), overview=_overview(findings, ph), timeline=_timeline(ph, today), howto=_howto(ph), filters=_filters(findings), shops=_shops_table(shops),
         body="".join(secs), disabled="disabled" if running else "",
         btn="Henter …" if running else "Hent priser nå", files=file_links, script=SCRIPT)
