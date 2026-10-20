@@ -141,6 +141,14 @@ class Outputs(unittest.TestCase):
         self.assertIn("gjennom julesalget og romjula", page("2026-12-20"))
         self.assertNotIn("sover", page("2026-12-31"))
 
+    def test_html_says_which_day_the_prices_are_from(self):
+        page = report.html_page([], dict(STATS, last_day="2026-10-20"), [], False, today="2026-10-21",
+                                data_day="2026-10-20")
+        self.assertIn("funnene gjelder prisene fra 20. okt", page)
+        page = report.html_page([], dict(STATS, last_day="2026-10-21"), [], False, today="2026-10-21",
+                                data_day="2026-10-21")
+        self.assertNotIn("funnene gjelder prisene fra", page)
+
     def test_bf_rel(self):
         self.assertEqual(report.bf_rel("2026-11-26", "2026-11-27"), " (1 dag før Black Friday)")
         self.assertEqual(report.bf_rel("2026-11-27", "2026-11-27"), " (på Black Friday)")

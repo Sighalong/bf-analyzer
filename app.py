@@ -77,9 +77,11 @@ def _build_page():
         key = _page_key()
         store = Store()
         try:
-            findings = analyze.analyze(store, key[1])
-            shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
-            page = report.html_page(findings, store.stats(), _files(), key[2], shops, today=key[1])
+            stats = store.stats()
+            day = analyze.data_day(key[1], stats["last_day"])   # before the morning run: yesterday's prices
+            findings = analyze.analyze(store, day)
+            shops = analyze.rank_shops(findings, store.shop_product_counts(day))
+            page = report.html_page(findings, stats, _files(), key[2], shops, today=key[1], data_day=day)
         finally:
             store.close()
         _page_cache.update(key=key, page=page, at=time.time())

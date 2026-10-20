@@ -198,6 +198,31 @@ class BfPhase(unittest.TestCase):
         self.assertEqual(analyze.bf_phase("2026-10-18")["days"], 40)
 
 
+class DataDay(unittest.TestCase):
+    def test_yesterday_until_todays_prices_arrive(self):
+        self.assertEqual(analyze.data_day("2026-10-21", "2026-10-20"), "2026-10-20")
+        self.assertEqual(analyze.data_day("2026-10-21", "2026-10-19"), "2026-10-19")   # 2 days old: still shown
+        self.assertEqual(analyze.data_day("2026-10-21", "2026-10-21"), "2026-10-21")
+        self.assertEqual(analyze.data_day("2026-10-21", "2026-10-18"), "2026-10-21")   # too old: nothing to show
+        self.assertEqual(analyze.data_day("2026-10-21", None), "2026-10-21")
+
+    def test_analyze_finds_yesterdays_prices(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        s = Store(os.path.join(d, "t.sqlite"))
+        self.addCleanup(s.close)
+        yesterday = day_back(TODAY, 1)
+        prices = [1000.0] * 80 + [1300.0] * 20   # raised for the last 20 days, still up yesterday
+        for i, price in enumerate(prices):
+            s.save_product({"source": "prisjakt", "product_id": "1", "title": "TV", "url": "u", "lowest_history": [],
+                            "offers": [{"shop": "A", "price": price, "original_price": None, "in_stock": True}]},
+                           day_back(yesterday, len(prices) - 1 - i))
+        self.assertEqual(analyze.analyze(s, TODAY), [])
+        day = analyze.data_day(TODAY, s.stats()["last_day"])
+        self.assertEqual(day, yesterday)
+        self.assertTrue(analyze.analyze(s, day))
+
+
 class Asleep(unittest.TestCase):
     def test_sleeps_from_new_year_to_august(self):
         self.assertIsNone(analyze.asleep("2026-12-31"))         # romjul sales are still followed

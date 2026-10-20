@@ -116,6 +116,16 @@ def bf_phase(today):
                 week_start=_fmt(week_start), week_end=_fmt(week_end), end=_fmt(end), wake=asleep(today))
 
 
+STALE_DAYS = 2   # until today's prices arrive, keep showing the latest collected day if it is at most this old
+
+
+def data_day(today, last_day):
+    """Day to analyse: today, or the latest collected day while today's prices are not in yet (up to STALE_DAYS old)."""
+    if last_day and last_day < today and (_day(today) - _day(last_day)).days <= STALE_DAYS:
+        return last_day
+    return today
+
+
 def asleep(today):
     """Next wake-up day (YYYY-MM-DD) while collection sleeps (New Year to 1 August), else None."""
     t = _day(today)
