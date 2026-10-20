@@ -5,6 +5,8 @@
 #   GET|POST /bfpris/run     start a collection run in the background (one at a time)
 #   GET  /bfpris/files/<n>   download a file from OUTPUT_DIR (reports, database)
 #   GET  /bfpris/status      plain-text status
+#   GET  /bfpris/api/health  cheap JSON health check for monitors (no analysis)
+import json
 import os
 import subprocess
 import sys
@@ -63,12 +65,18 @@ def _files():
     return sorted(n for n in os.listdir(OUTPUT_DIR) if not n.startswith(".") and not n.endswith(("-wal", "-shm")))
 
 
+def _page_key():
+    return (_db_mtime(default_path()), net.today_oslo(), _run_lock.locked())
+
+
 def _build_page():
     """Run the analysis and cache the page. The caller holds _page_lock."""
     try:
+        # Take the key before opening: opening creates a fresh -wal file that closing removes again,
+        # so a key taken while open never matches the next request and every visit would rebuild.
+        key = _page_key()
         store = Store()
         try:
-            key = (_db_mtime(store.path), net.today_oslo(), _run_lock.locked())
             findings = analyze.analyze(store, key[1])
             shops = analyze.rank_shops(findings, store.shop_product_counts(key[1]))
             page = report.html_page(findings, store.stats(), _files(), key[2], shops, today=key[1])
@@ -93,12 +101,22 @@ class Handler(BaseHTTPRequestHandler):
     def _index(self):
         # Analysis takes ~40 s on a busy Pi 1B, longer than a browser waits. Serve the last page at
         # once and rebuild it in the background when the database, the day or the run state changes.
-        key = (_db_mtime(default_path()), net.today_oslo(), _run_lock.locked())
+        key = _page_key()
         old = _page_cache.get("key")
         if old != key and (old is None or old[1:] != key[1:] or time.time() - _page_cache["at"] > REBUILD_SECONDS):
             if _page_lock.acquire(blocking=False):
                 threading.Thread(target=_build_page, daemon=True).start()
         return _page_cache.get("page", WAIT_PAGE)
+
+    def _health(self):
+        # Cheap check for monitors: reads the database header only, never opens SQLite or rebuilds.
+        try:
+            with open(default_path(), "rb") as fh:
+                db_ok = fh.read(16) == b"SQLite format 3\x00"
+        except OSError:
+            db_ok = False
+        return json.dumps({"ok": db_ok, "db": db_ok, "page_ready": "page" in _page_cache,
+                           "running": _run_lock.locked()})
 
     def _sub(self, url):
         """Path below BASE, or None outside it."""
@@ -117,6 +135,8 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "/status":
             return self._send(200, "running: {}\nlast exit code: {}\noutput dir: {}\n".format(
                 _run_lock.locked(), _last_run["code"], OUTPUT_DIR), "text/plain; charset=utf-8")
+        if sub == "/api/health":
+            return self._send(200, self._health(), "application/json")
         if sub == "/run":
             return self._run(url)
         if sub and sub.startswith("/files/"):
