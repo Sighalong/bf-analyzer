@@ -100,13 +100,18 @@ class Outputs(unittest.TestCase):
         self.assertIn("2 mistenkelige tilbud</b> hos 1 butikker", page)
         self.assertIn("<option value='mobil'>Mobil</option>", page)
         self.assertIn("data-rule='fake_discount' open", page)
-        self.assertIn("Var vanligvis 1 000 kr. Hevet til 1 300 kr 5. nov (22 dager før Black Friday), "
-                      "nå «tilbud» 1 000 kr.", page)
+        self.assertIn("Var vanligvis 1\u00a0000\u00a0kr. Hevet til 1\u00a0300\u00a0kr 5. nov (22 dager før Black "
+                      "Friday), nå «tilbud» 1\u00a0000\u00a0kr.", page)   # amounts never wrap mid-number
         self.assertIn("Black Friday 27. nov</b> · i dag", page)
         self.assertIn("Det er Black Week", page)
-        self.assertIn("Oppgir før-pris 1 500 kr", page)
+        self.assertIn("Oppgir før-pris 1\u00a0500\u00a0kr", page)
         self.assertIn("normalpris målt før 1. okt", page)
-        self.assertIn("<b>Prishopp:</b> ingen funnet.", page)
+        self.assertIn("<b>Satt opp i pris:</b> ingen funnet.", page)
+        # overview chips: one per type with its count, in the dashboard's order
+        self.assertIn("href='#t-fake_discount' data-open='fake_discount'><b>1</b> Lurepris</a>", page)
+        self.assertIn("class='chip warn zero' href='#t-hike'", page)
+        self.assertIn("<span>hevet før «tilbudet»</span>", page)     # badge says what the % is
+        self.assertIn("Kriterium: Minst 10\u00a0% over normalpris i minst 2 dager", page)
         self.assertIn("href='files/bfa_report.csv'", page)   # relative, so it works under BASE_PATH
 
     def test_html_warmup_leads_with_hikes(self):
@@ -116,10 +121,10 @@ class Outputs(unittest.TestCase):
         self.assertIn("Black Friday 27. nov</b> · om 40 dager", page)
         self.assertIn("Nå er det oppkjøring", page)
         self.assertIn("class='verdict warn'><b>1 priser er satt opp før Black Friday</b>", page)
-        self.assertIn("1 hevet og satt ned igjen", page)
-        self.assertIn("1 billigere enn i sommer", page)
+        self.assertIn("<b>1</b> Lurepris</a>", page)
+        self.assertIn("<b>1</b> Ekte prisfall</a>", page)
         self.assertNotIn("mistenkelige tilbud</b>", page)
-        self.assertIn("data-rule='hike' open><summary><h2>Hevet før Black Friday", page)
+        self.assertIn("data-rule='hike' open><summary><h2>Satt opp i pris", page)
         self.assertLess(page.index("data-rule='hike'"), page.index("data-rule='deal'"))
 
     def test_html_off_season_has_countdown_only(self):
@@ -152,7 +157,7 @@ class Outputs(unittest.TestCase):
     def test_text_has_shop_ranking(self):
         out = report.text([finding()], STATS, shops=[shop_row()])
         self.assertIn("== Butikker med flest mistenkelige produkter (1) ==", out)
-        self.assertIn("3 av 6 produkter (50 %): 2 falsk rabatt, 1 før-pris", out)
+        self.assertIn("3 av 6 produkter (50 %): 2 lurepriser, 1 oppblåst før-pris", out)
 
     def test_markdown_has_shop_ranking(self):
         path = os.path.join(self.tmp, "r.md")
@@ -178,3 +183,20 @@ class Outputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Types(unittest.TestCase):
+    def test_every_rule_has_one_unique_name_and_definition(self):
+        rules = {t.rule for t in report.TYPES}
+        self.assertEqual(rules, set(analyze.BAD_RULES) | {"deal"})
+        self.assertEqual(len({t.name for t in report.TYPES}), len(report.TYPES))
+        for t in report.TYPES:
+            self.assertTrue(t.means and t.measured and t.tone in ("bad", "warn", "good"), t.rule)
+
+    def test_criteria_follow_the_thresholds(self):
+        self.assertIn("{:.0f} %".format(analyze.HIKE * 100), report.TYPE["hike"].measured)
+        self.assertIn("30 dagene", report.TYPE["before_price"].measured)
+
+    def test_counts(self):
+        self.assertEqual(report.TYPE["fake_discount"].count(1), "1 lurepris")
+        self.assertEqual(report.TYPE["fake_discount"].count(3), "3 lurepriser")

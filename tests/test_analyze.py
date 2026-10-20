@@ -48,11 +48,44 @@ class FakeDiscount(unittest.TestCase):
         rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1300.0), (2, 0, 900.0)])
         self.assertEqual(list(rules(rows)), ["deal"])
 
-    def test_partial_drop_above_baseline_is_still_flagged(self):
-        # peak 1300 -> now 1150: >8 % off the peak, not below the baseline low; the rule only
-        # has a lower bound (now >= low*0.97), so this counts as a fake discount
+    def test_partial_drop_still_well_above_normal_is_a_hike(self):
+        # peak 1300 -> now 1150: the "discount" leaves the price 15 % above normal, so it is
+        # still raised, not back to normal
         rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1300.0), (2, 0, 1150.0)])
+        out = rules(rows)
+        self.assertEqual(list(out), ["hike"])
+        self.assertAlmostEqual(out["hike"]["score"], 0.15)
+
+    def test_drop_to_within_ten_percent_of_normal_is_fake(self):
+        rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1300.0), (2, 0, 1090.0)])
         self.assertEqual(list(rules(rows)), ["fake_discount"])
+
+    def test_drop_somewhat_below_normal_is_not_fake(self):
+        # 6 % below normal: a real cut, even if not deep enough for "deal"
+        rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1300.0), (2, 0, 940.0)])
+        self.assertNotIn("fake_discount", rules(rows))
+
+    def test_one_dip_in_baseline_does_not_widen_fake_band(self):
+        # JBL PartyBox on the Pi: one cheap day in the baseline made a real price cut look fake
+        rows = series(TODAY, [(90, 12, 4312.0), (11, 11, 2990.0), (10, 3, 4990.0), (2, 0, 3250.0)])
+        out = rules(rows)
+        self.assertNotIn("fake_discount", out)
+        self.assertEqual(out["deal"]["base_low"], 4312.0)
+
+
+class Hike2(unittest.TestCase):
+    def test_one_day_spike_is_ignored(self):
+        rows = series(TODAY, [(90, 1, 1000.0), (0, 0, 1300.0)])
+        self.assertEqual(rules(rows), {})
+
+    def test_two_day_rise_counts(self):
+        rows = series(TODAY, [(90, 2, 1000.0), (1, 0, 1300.0)])
+        self.assertEqual(list(rules(rows)), ["hike"])
+
+    def test_small_rise_near_peak_below_threshold_is_not_a_hike(self):
+        # peak +12 %, now +9 %: no longer raised by the 10 % threshold
+        rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1120.0), (2, 0, 1090.0)])
+        self.assertEqual(rules(rows), {})
 
     def test_drop_under_eight_percent_is_a_hike_not_fake(self):
         rows = series(TODAY, [(90, 11, 1000.0), (10, 3, 1300.0), (2, 0, 1230.0)])
