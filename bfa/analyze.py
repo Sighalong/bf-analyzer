@@ -12,10 +12,13 @@ Baseline (the "normal" price) depends on the time of year:
   rest of the year: rolling, days 31..90 back.
 Recent = every day after the baseline, at most 60 days back.
 
-Rules:
-  hike            peak(recent) >= baseline median * (1 + HIKE)   and the price is still near that peak
-  fake_discount   same hike, then dropped >= DROP from the peak, but now is not meaningfully below
-                  the baseline low: the "discount" mostly undoes the hike
+Rules (normal = baseline median, low = baseline LOW_QUANTILE, so a one-day dip doesn't count).
+Reader-facing names and definitions live in report.TYPES; keep them in step with these:
+  hike            peak(recent) >= normal * (1 + HIKE), held for >= MIN_RAISED_DAYS days, and the
+                  price is still raised: now >= normal * (1 + HIKE)
+  fake_discount   same hike, then dropped >= DROP from the peak to about normal (not more than DEAL
+                  below it): the "discount" only undoes the hike. A drop well below normal is a real
+                  cut and is left to "deal"
   before_price    the shop's stated før-pris is above its own lowest price in the previous 30 days
                   (the reference the EU price-indication rule uses)
   deal            now is >= DEAL below the baseline low: a real price cut
@@ -29,7 +32,8 @@ from datetime import datetime, timedelta
 
 HIKE = 0.10
 DROP = 0.08
-NEAR_BASELINE = 0.03
+LOW_QUANTILE = 0.1         # "baseline low" = this quantile of the baseline, robust to one-off dips
+MIN_RAISED_DAYS = 2         # a hike must hold this many recent days; one-day spikes are noise
 DEAL = 0.05
 OUTLIER = 2.0
 MIN_BASELINE_DAYS = 7
@@ -54,6 +58,12 @@ class Finding(object):
 
     def as_dict(self):
         return {k: getattr(self, k) for k in self.__slots__ if k != "series"}
+
+
+def _quantile(xs, q):
+    """Low quantile by rank (no interpolation): q=0.1 of 20 values is the 3rd lowest."""
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(len(xs) * q))]
 
 
 def _day(s):
@@ -190,16 +200,18 @@ def analyze_series(rows, today, market=None, baseline_end=None, lowest=False, co
     out = []
 
     if len(base) >= MIN_BASELINE_DAYS and len(recent) >= MIN_RECENT_DAYS:
-        base_med, base_low = _median(base), min(base)
+        base_med, base_low = _median(base), _quantile(base, LOW_QUANTILE)
+        raised = base_med * (1 + HIKE)
         peak_day, peak = max(((d, p) for d, p, _ in recent), key=lambda x: x[1])
         info = dict(base_median=base_med, base_low=base_low, peak=peak, peak_day=peak_day, now=now,
                     days=len(base) + len(recent), baseline=label)
         hike = peak / base_med - 1 if base_med else 0
-        if hike >= HIKE and (not lowest or _lowest_hike_ok(base_rows, peak_day, peak, base_med, confirm)):
-            if now <= peak * (1 - DROP) and now >= base_low * (1 - NEAR_BASELINE):
-                out.append(("fake_discount", dict(info, score=hike)))
-            elif now >= peak * (1 - DROP):
+        held = sum(1 for _, p, _ in recent if p >= raised) >= MIN_RAISED_DAYS
+        if hike >= HIKE and held and (not lowest or _lowest_hike_ok(base_rows, peak_day, peak, base_med, confirm)):
+            if now >= raised:
                 out.append(("hike", dict(info, score=now / base_med - 1)))
+            elif now <= peak * (1 - DROP) and now >= base_med * (1 - DEAL):
+                out.append(("fake_discount", dict(info, score=hike)))
         if base_low and now <= base_low * (1 - DEAL):
             out.append(("deal", dict(info, score=1 - now / base_low)))
 

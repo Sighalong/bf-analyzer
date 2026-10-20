@@ -1,7 +1,7 @@
 # bf-analyzer – Black Friday-prisvakt
 
 Denne lille verktøykassen følger prisene i norske nettbutikker dag for dag og
-sier fra når noe lukter **falsk rabatt**: butikken som hever prisen i ukene før
+sier fra når noe lukter **lurepris**: butikken som hever prisen i ukene før
 Black Friday, for så å «sette den ned» igjen med store rabattskilt.
 
 Den henter priser per butikk fra **Prisjakt.no** og **Klarna** (Prisguide.no
@@ -113,21 +113,33 @@ I Prisjakts «billigste butikk»-historikk regnes et prishopp bare når prisene 
 også har steget, eller (før det finnes nok data per butikk) når hoppet er under 1,6 × normalprisen.
 Et større hopp er nesten alltid at den billigste butikken ble utsolgt.
 
-Flaggene:
+Flaggene har ett navn hver, det samme i alle rapporter (definert i `bfa/report.py`, `TYPES`).
+De følger førprisregelen i prisopplysningsforskriften § 9a: en oppgitt før-pris skal være den
+laveste prisen butikken har tatt de siste 30 dagene før prisen ble satt ned. *Normalpris* er
+medianen i grunnlaget, *vanlig lavpris* er prisen de 10 % billigste dagene i grunnlaget (så én
+enkelt billig dag ikke teller).
 
-- **hike (prishopp):** toppen etter grunnlaget er minst 10 % over normalprisen, og prisen ligger fortsatt nær toppen.
-- **fake_discount (falsk rabatt):** prisen steg minst 10 %, falt så minst 8 % fra toppen, men er ikke nevneverdig under grunnlagets laveste pris (innenfor 3 %).
-- **before_price (før-pris):** butikkens oppgitte «før-pris» er høyere enn butikkens egen laveste pris de 30 dagene *før den nåværende prisen startet*. Bare Prisjakt, og krever minst 14 dager med data.
-- **deal (ekte tilbud):** prisen er minst 5 % under grunnlagets laveste.
+- **Lurepris** (`fake_discount`): prisen var minst 10 % over normalprisen i minst 2 dager, ble
+  så satt ned minst 8 % fra toppen, men ikke mer enn 5 % under normalprisen. «Tilbudet» tar
+  bare tilbake økningen.
+- **Oppblåst før-pris** (`before_price`): butikkens oppgitte før-pris er mer enn 1 % over
+  butikkens egen laveste pris de 30 dagene *før den nåværende prisen startet*. Bare Prisjakt,
+  og krever minst 14 dager med data.
+- **Satt opp i pris** (`hike`): prisen er nå minst 10 % over normalprisen og har vært hevet i
+  minst 2 dager. Ikke ulovlig, men starten på en lurepris.
+- **Ekte prisfall** (`deal`): prisen er minst 5 % under vanlig lavpris.
+
+En pris som faller mer enn 5 % under normalprisen etter en økning, regnes ikke som lurepris,
+og en pris som fortsatt er 10 % over normalen etter et lite kutt, står under «Satt opp i pris».
 
 Eksempel: en TV koster vanligvis 10 000 kr. I oktober heves prisen til 12 000 kr, og
 så er den plutselig «BF-tilbud» til 10 000 kr. Det er ingen reell rabatt (prisen er
-tilbake der den alltid var), og den flagges som **falsk rabatt**.
+tilbake der den alltid var), og den flagges som **lurepris**.
 
 **Tidslinje:** øverst viser nettsiden en nedtelling til Black Friday og hvor i sesongen vi er.
-Før Black Week (mandag før Black Friday til Cyber Monday) står **prisøkninger** først, fordi
-det er da en falsk Black Friday-rabatt forberedes. Under og etter Black Week står **falsk
-rabatt** først. Hvert funn sier hvor mange dager før Black Friday prisen ble hevet.
+Før Black Week (mandag før Black Friday til Cyber Monday) står **Satt opp i pris** først, fordi
+det er da en lurepris forberedes. Under og etter Black Week står **Lurepris** først. Under
+tidslinjen viser en rad med knapper hvor mange funn det er av hver type; trykk for å gå dit. Hvert funn sier hvor mange dager før Black Friday prisen ble hevet.
 
 **Butikkrangering:** rapporten viser også hvilke butikker som har flest flaggede
 produkter, som andel av produktene de selger blant dem vi følger. Webgrensesnittet
