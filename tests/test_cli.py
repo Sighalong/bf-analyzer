@@ -93,6 +93,17 @@ class ReportEndToEnd(unittest.TestCase):
         _, out, _ = self.run_main("--min-price-nok", "5000", "--out-prefix", os.path.join(self.tmp, "p"))
         with open(os.path.join(self.tmp, "p.csv"), encoding="utf-8") as fh:
             self.assertEqual(len(list(csv.DictReader(fh))), 0)
+        # the report still remembers the finding, so "new" does not depend on the price filter
+        s = Store(self.db)
+        self.addCleanup(s.close)
+        info = s.flag_info(TODAY)
+        self.assertEqual(info["since"], TODAY)
+        self.assertEqual(info["first"], {("hike", "klarna", "9", "Butikk"): TODAY})
+
+    def test_csv_has_grade(self):
+        _, out, _ = self.run_main()
+        with open(os.path.join(out, "bfa_report.csv"), encoding="utf-8") as fh:
+            self.assertEqual(next(csv.DictReader(fh))["grad"], "Kraftig")   # 40 % over normal
 
     def test_collect_sleeps_outside_season(self):
         out = os.path.join(self.tmp, "o4")

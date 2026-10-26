@@ -112,7 +112,9 @@ def collect(store, sources, categories, per_category, max_products, today, produ
 def write_reports(store, today, out_prefix, top, min_price=0, baseline_end="auto"):
     stats = store.stats()
     day = analyze.data_day(today, stats["last_day"])   # before the morning run: yesterday's prices
-    findings = [f for f in analyze.analyze(store, day, baseline_end) if (f.now or 0) >= min_price]
+    findings = analyze.analyze(store, day, baseline_end)
+    store.record_flags(findings, day)   # before the price filter: "new" must not depend on --min-price-nok
+    findings = [f for f in findings if (f.now or 0) >= min_price]
     shops = analyze.rank_shops(findings, store.shop_product_counts(day))
     report.save_csv(out_prefix + ".csv", findings)
     report.save_markdown(out_prefix + ".md", findings, stats, shops, top=top)

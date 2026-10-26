@@ -141,6 +141,14 @@ Før Black Week (mandag før Black Friday til Cyber Monday) står **Satt opp i p
 det er da en lurepris forberedes. Under og etter Black Week står **Lurepris** først. Under
 tidslinjen viser en rad med knapper hvor mange funn det er av hver type; trykk for å gå dit. Hvert funn sier hvor mange dager før Black Friday prisen ble hevet.
 
+**Nye funn og grad:** hver innsamling husker når et funn ble flagget første gang (tabellen `flags`
+i databasen). Nettsiden merker funn som er nye i siste innsamling med **NY**, viser «Siden 25. okt: +3 nye ·
+2 borte» øverst og har filteret «Bare nye». Hver enhet husker også når du sist var inne, og merker funn som
+har kommet siden med «Ny siden sist» (lagres bare i nettleseren). **Grad** (Litt, Tydelig, Kraftig) sier hvor
+stort avviket er innenfor typen: for prishopp og lurepris er det tydelig fra 20 % og kraftig fra 40 %, for
+oppblåst før-pris fra 10 % og 25 %, og for ekte prisfall fra 10 % og 20 %. Listene kan sorteres etter grad,
+nyeste eller kronebeløp, og grafen åpnes med «Vis graf» på mobil.
+
 **Butikkrangering:** rapporten viser også hvilke butikker som har flest flaggede
 produkter, som andel av produktene de selger blant dem vi følger. Webgrensesnittet
 viser en liten prisgraf per funn: normalpris (stiplet), topp (oransje) og nå (grønn),

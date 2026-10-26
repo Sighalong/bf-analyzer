@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS prices (
     PRIMARY KEY (source, product_id, shop, day)
 );
 CREATE INDEX IF NOT EXISTS prices_by_day ON prices (day);
+CREATE TABLE IF NOT EXISTS flags (
+    rule TEXT NOT NULL, source TEXT NOT NULL, product_id TEXT NOT NULL, shop TEXT NOT NULL,
+    first_day TEXT NOT NULL, last_day TEXT NOT NULL,
+    PRIMARY KEY (rule, source, product_id, shop)
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -100,6 +106,58 @@ class Store(object):
             "first_day": q("SELECT MIN(day) FROM prices").fetchone()[0],
             "last_day": q("SELECT MAX(day) FROM prices").fetchone()[0],
         }
+
+    def _meta(self, key):
+        row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def _prev_report(self, day):
+        """The report day before `day` (a second report on the same day compares with the same earlier one)."""
+        last = self._meta("flags_last")
+        return self._meta("flags_prev") if last == day else last
+
+    def record_flags(self, findings, day):
+        """Remember since when each finding has been flagged without a break (one report per collection).
+
+        A finding that was also in the previous report keeps its first day; otherwise it starts today.
+        The first report ever sets flags_since, so findings from before tracking started are not "new".
+        """
+        last = self._meta("flags_last")
+        if last and last > day:
+            return                      # a report for an older day (--today) must not rewrite history
+        prev = self._prev_report(day)
+        c = self.db
+        for f in findings:
+            key = (f.rule, f.source, f.product_id, f.shop)
+            row = c.execute("SELECT first_day, last_day FROM flags WHERE rule=? AND source=? AND product_id=? "
+                            "AND shop=?", key).fetchone()
+            first = row[0] if row and (row[1] == day or (prev and row[1] >= prev)) else day
+            c.execute("INSERT OR REPLACE INTO flags VALUES (?,?,?,?,?,?)", key + (first, day))
+        if self._meta("flags_since") is None:
+            c.execute("INSERT INTO meta VALUES ('flags_since', ?)", (day,))
+        c.executemany("INSERT OR REPLACE INTO meta VALUES (?,?)", [("flags_prev", prev), ("flags_last", day)])
+        c.commit()
+
+    def flag_info(self, day):
+        """What the page needs to mark new findings and list the ones that went away since the previous report.
+
+        first: {(rule, source, product_id, shop): first_day} for running streaks (a finding missing here
+        starts on `day`); since: day tracking started (None = never);
+        prev: previous report day; gone: [(rule, source, product_id, shop, title)] flagged in that report.
+        """
+        since = self._meta("flags_since")
+        if since is None:
+            return {"first": {}, "since": None, "prev": None, "gone": []}
+        prev = self._prev_report(day)
+        # only streaks still running (flagged in the report for `day` or the one before) carry their first day
+        first = {tuple(r[:4]): r[4] for r in self.db.execute(
+            "SELECT rule, source, product_id, shop, first_day FROM flags WHERE last_day=? OR last_day>=?",
+            (day, prev or day))}
+        gone = self.db.execute(
+            "SELECT f.rule, f.source, f.product_id, f.shop, p.title FROM flags f "
+            "LEFT JOIN products p USING (source, product_id) WHERE f.last_day=? ORDER BY p.title",
+            (prev,)).fetchall() if prev else []
+        return {"first": first, "since": since, "prev": prev, "gone": gone}
 
 
 def _shift(day, n):
