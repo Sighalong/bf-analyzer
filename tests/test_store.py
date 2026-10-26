@@ -26,6 +26,54 @@ class StoreCase(unittest.TestCase):
         self.addCleanup(self.s.close)
 
 
+class Flags(StoreCase):
+    """record_flags/flag_info: since when each finding has been flagged, and which ones went away."""
+
+    def f(self, pid, rule="hike", shop="A"):
+        from bfa.analyze import Finding
+        return Finding(rule=rule, source="prisjakt", product_id=pid, shop=shop)
+
+    def test_no_tracking_before_first_report(self):
+        self.assertEqual(self.s.flag_info("2026-10-20"), {"first": {}, "since": None, "prev": None, "gone": []})
+
+    def test_streaks_gaps_and_gone(self):
+        self.s.save_product(product("2", title="Borte-TV"), "2026-10-20")
+        self.s.record_flags([self.f("1"), self.f("2")], "2026-10-20")
+        info = self.s.flag_info("2026-10-20")
+        self.assertEqual(info["since"], "2026-10-20")      # first report: nothing is "new" yet
+        self.assertIsNone(info["prev"])
+        self.s.record_flags([self.f("1"), self.f("3")], "2026-10-21")
+        info = self.s.flag_info("2026-10-21")
+        self.assertEqual(info["first"][("hike", "prisjakt", "1", "A")], "2026-10-20")   # streak kept
+        self.assertEqual(info["first"][("hike", "prisjakt", "3", "A")], "2026-10-21")   # new today
+        self.assertEqual(info["prev"], "2026-10-20")
+        self.assertEqual(info["gone"], [("hike", "prisjakt", "2", "A", "Borte-TV")])
+        # back after a gap: a new streak starts, and the old first day is not shown for it
+        self.s.record_flags([self.f("1"), self.f("2")], "2026-10-22")
+        self.assertEqual(self.s.flag_info("2026-10-22")["first"][("hike", "prisjakt", "2", "A")], "2026-10-22")
+
+    def test_second_report_same_day_compares_with_the_day_before(self):
+        self.s.record_flags([self.f("1")], "2026-10-20")
+        self.s.record_flags([self.f("2")], "2026-10-21")    # partial run
+        self.s.record_flags([self.f("1"), self.f("2")], "2026-10-21")   # full run later the same day
+        info = self.s.flag_info("2026-10-21")
+        self.assertEqual(info["prev"], "2026-10-20")
+        self.assertEqual(info["first"][("hike", "prisjakt", "1", "A")], "2026-10-20")
+        self.assertEqual(info["first"][("hike", "prisjakt", "2", "A")], "2026-10-21")
+
+    def test_page_before_todays_report_compares_with_last_report(self):
+        self.s.record_flags([self.f("1")], "2026-10-20")
+        self.s.record_flags([self.f("1")], "2026-10-21")
+        info = self.s.flag_info("2026-10-22")              # today's collection still running
+        self.assertEqual(info["prev"], "2026-10-21")
+        self.assertEqual(info["first"][("hike", "prisjakt", "1", "A")], "2026-10-20")
+
+    def test_older_report_does_not_rewrite_history(self):
+        self.s.record_flags([self.f("1")], "2026-10-21")
+        self.s.record_flags([self.f("2")], "2026-10-15")
+        self.assertNotIn(("hike", "prisjakt", "2", "A"), self.s.flag_info("2026-10-21")["first"])
+
+
 class SaveProduct(StoreCase):
     def test_round_trip(self):
         p = product(offers=[offer("A", 100.0, 150.0), offer("B", 120.0, None, False)])
