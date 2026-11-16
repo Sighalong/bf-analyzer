@@ -44,6 +44,15 @@ SEASON_TAIL_DAYS = 14       # season ends this long after Black Friday (covers C
 WAKE = (8, 1)               # daily collection wakes here: the 1 Oct baseline needs August-September prices
 SLEEP = (1, 1)              # ... and sleeps from New Year, after the Christmas and romjul sales
 CHART_DAYS = 90
+# Phone operators: their phone prices on the comparison sites usually need a plan ("med 12 md.
+# rabattavtale", "Telenorkunde"), so they are no price anyone can pay. Matched on the start of the
+# shop name, ignoring case ("Telenor.no" too). Chilimobil sells at normal prices and stays.
+PLAN_SHOPS = ("telia", "telenor", "talkmore", "ice", "onecall", "mycall")
+
+
+def plan_shop(name):
+    n = (name or "").strip().lower()
+    return any(n == p or n.startswith(p + ".") or n.startswith(p + " ") for p in PLAN_SHOPS)
 LOWEST_MAX_JUMP = 1.6       # cheapest-price series: a bigger jump is a shop dropping out, not a hike
 
 
@@ -66,8 +75,15 @@ def _quantile(xs, q):
     return xs[min(len(xs) - 1, int(len(xs) * q))]
 
 
+_DAYS = {}
+
+
 def _day(s):
-    return datetime.strptime(s, "%Y-%m-%d")
+    # strptime costs ~1 ms on the Pi and runs ~400 000 times per analysis; there are only a few hundred days
+    d = _DAYS.get(s)
+    if d is None:
+        d = _DAYS[s] = datetime.strptime(s, "%Y-%m-%d")
+    return d
 
 
 def _fmt(d):
@@ -241,21 +257,45 @@ def analyze_series(rows, today, market=None, baseline_end=None, lowest=False, co
     return [(rule, dict(f, series=chart)) for rule, f in out]
 
 
+def _market(series):
+    """{day: median in-stock shop price} over the per-shop series (not the site's cheapest)."""
+    by_day = {}
+    for shop, rows in series.items():
+        if shop.startswith("("):
+            continue
+        for day, price, _, in_stock in rows:
+            if in_stock:
+                by_day.setdefault(day, []).append(price)
+    return {day: _median(prices) for day, prices in by_day.items()}
+
+
 def analyze(store, today, baseline_end="auto"):
+    """Findings for `today`, worst first.
+
+    Per-shop series from phone operators (plan prices) are skipped, and for a product the parser marked
+    as having variants, per-shop rows from before that day are ignored (they held a random variant).
+    """
     be = season_baseline_end(today, baseline_end)
-    market = {}
-    for (source, pid, day), m in store.market_medians().items():
-        market.setdefault((source, pid), {})[day] = m
+    clean = store.clean_since()
     findings = []
-    for source, pid, shop, title, url, category in store.series_keys():
-        rows = store.series(source, pid, shop)
-        # the site's own cheapest-price history is already a market figure: no outlier check
-        lowest = shop.startswith("(")
-        mk = market.get((source, pid))
-        for rule, f in analyze_series(rows, today, None if lowest else mk, be,
-                                      lowest=lowest, confirm=mk if lowest else None):
-            findings.append(Finding(rule=rule, source=source, product_id=pid, title=title, url=url,
-                                    category=category, shop=shop, **f))
+    for source, pid, title, url, category, shops in store.iter_products(today):
+        since = clean.get((source, pid))
+        series = {}
+        for shop, rows in shops.items():
+            if not shop.startswith("("):
+                if plan_shop(shop):
+                    continue
+                if since:
+                    rows = [r for r in rows if r[0] >= since]
+            series[shop] = rows
+        mk = _market(series)
+        for shop, rows in series.items():
+            # the site's own cheapest-price history is already a market figure: no outlier check
+            lowest = shop.startswith("(")
+            for rule, f in analyze_series(rows, today, None if lowest else mk, be,
+                                          lowest=lowest, confirm=mk if lowest else None):
+                findings.append(Finding(rule=rule, source=source, product_id=pid, title=title, url=url,
+                                        category=category, shop=shop, **f))
     findings.sort(key=lambda f: -f.score)
     return findings
 

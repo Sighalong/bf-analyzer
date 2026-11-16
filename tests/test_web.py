@@ -67,5 +67,16 @@ class PageCacheTest(unittest.TestCase):
         self.assertEqual(app._page_cache["key"], app._page_key())
 
 
+class PageKey(unittest.TestCase):
+    def test_key_follows_the_report_file(self):
+        """A collection writes the database for half an hour but the report once: rebuild once."""
+        rep = os.path.join(app.OUTPUT_DIR, "bfa_report.csv")
+        with open(rep, "w") as fh:
+            fh.write("x")
+        self.addCleanup(os.remove, rep)
+        os.utime(rep, (1000, 1000))
+        self.assertEqual(app._page_key()[0], 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

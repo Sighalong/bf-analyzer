@@ -2,7 +2,7 @@
 import json
 import re
 
-from . import net
+from . import analyze, net
 
 BASE = "https://www.klarna.com"
 NAME = "klarna"
@@ -75,7 +75,7 @@ def parse_product(page, pid, url):
         except (TypeError, ValueError):
             continue
         shop = ((o.get("seller") or {}).get("name") or "").strip()
-        if not shop or price <= 0:
+        if not shop or price <= 0 or analyze.plan_shop(shop):   # operators: phone prices need a plan
             continue
         if shop not in by_shop or price < by_shop[shop]["price"]:
             by_shop[shop] = {

@@ -106,6 +106,49 @@ class ParseProductSynthetic(unittest.TestCase):
         self.assertEqual(prisjakt.parse_product(page, "5")["lowest_now"], 4321.0)
 
 
+class VariantsAndPlans(ParseProductSynthetic):
+    """Since Nov 2026 offerRows has a row per variant; operators' plan prices leak into the history."""
+
+    def test_one_offer_per_shop_cheapest_in_stock(self):
+        p = self.parse([
+            self.offer(id="a1", variantId=1, price={"amount": 900}, stockStatus="OutOfStock", shop={"name": "A"}),
+            self.offer(id="a2", variantId=2, price={"amount": 1200}, originalPrice={"amount": 1500}, shop={"name": "A"}),
+            self.offer(id="a3", variantId=3, price={"amount": 1000}, shop={"name": "A"}),
+            self.offer(id="b1", variantId=1, price={"amount": 800}, stockStatus="OutOfStock", shop={"name": "B"}),
+            self.offer(id="b2", variantId=2, price={"amount": 700}, stockStatus="Backorder", shop={"name": "B"}),
+            self.offer(id="m", price={"amount": 500}, priceType="MemberPrice", shop={"name": "C"}),
+        ])
+        got = [(o["shop"], o["price"], o["original_price"], o["in_stock"]) for o in p["offers"]]
+        self.assertEqual(got, [("A", 1000.0, None, True),       # in stock beats a cheaper sold-out size
+                               ("B", 700.0, None, False)])      # none in stock: its cheapest
+        self.assertTrue(p["variants"])
+
+    def test_no_variants_flag_when_each_shop_has_one_price(self):
+        p = self.parse([self.offer(id="a", shop={"name": "A"}), self.offer(id="b", shop={"name": "B"}),
+                        self.offer(id="b2", variantId=2, shop={"name": "B"})])   # listed twice, same price
+        self.assertFalse(p["variants"])
+
+    def test_operator_shops_and_their_plan_history_are_dropped(self):
+        rows = [self.offer(id="t", shopId=7, isPaidMembership=True, price={"amount": 9490}, shop={"name": "Telenor"}),
+                self.offer(id="c", shopId=8, price={"amount": 12490}, shop={"name": "Chilimobil"}),
+                self.offer(id="i", shopId=9, price={"amount": 11000}, shop={"name": "ICE"})]
+        hist = [{"date": "2026-11-01T10:00:00Z", "price": 1249000, "shopId": 8, "shopName": "Chilimobil"},
+                {"date": "2026-11-10T10:00:00Z", "price": 949000, "shopId": 7, "shopName": "Telenor",
+                 "isMembershipPrice": False, "isPaidMembership": False},    # plan price, not marked
+                {"date": "2026-11-11T10:00:00Z", "price": 949000, "shopId": 5, "shopName": "X",
+                 "isMembershipPrice": True}]
+        text = '0:{"offerRows":%s,"historyItems":%s}' % (json.dumps(rows), json.dumps(hist))
+        p = prisjakt.parse_product(flight_page(text), "5")
+        self.assertEqual([o["shop"] for o in p["offers"]], ["Chilimobil"])   # ICE sells with a plan too
+        self.assertEqual([tuple(h) for h in p["lowest_history"]], [("2026-11-01", 12490.0)])
+
+    def test_campaign_tail_is_stripped_from_title(self):
+        page = flight_page("0:{}", title="Apple iPhone 16 128GB - Black Friday: fra 7\u00a0990 kr - Sammenlign priser")
+        self.assertEqual(prisjakt.parse_product(page, "5")["title"], "Apple iPhone 16 128GB")
+        page = flight_page("0:{}", title="LG C5 65 - OLED65C54LA - Sammenlign priser hos Prisjakt")
+        self.assertEqual(prisjakt.parse_product(page, "5")["title"], "LG C5 65 - OLED65C54LA")
+
+
 class Discover(unittest.TestCase):
     def test_paging_stops_when_nothing_new(self):
         calls = []

@@ -1,7 +1,26 @@
 import unittest
+from unittest import mock
 
 from _helpers import fixture
 from bfa import net
+
+
+class SharedOpener(unittest.TestCase):
+    def test_one_ssl_context_for_all_requests(self):
+        """A new default SSL context per request costs ~2 s CPU on a Pi 1B; build it once."""
+        class Resp(object):
+            headers = {}
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b"ok"
+        old = net._opener
+        self.addCleanup(setattr, net, "_opener", old)
+        net._opener = None
+        with mock.patch("ssl.create_default_context", wraps=__import__("ssl").create_default_context) as ctx, \
+                mock.patch("urllib.request.OpenerDirector.open", return_value=Resp()):
+            self.assertEqual(net._http_get("https://example.org/a"), "ok")
+            self.assertEqual(net._http_get("https://example.org/b"), "ok")
+        self.assertEqual(ctx.call_count, 1)
 
 
 class OsloDay(unittest.TestCase):

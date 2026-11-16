@@ -163,6 +163,8 @@ sammenlignes mot det. Jo tidligere du starter, jo bedre.
 
 - **Prisjakt.no:** kategorisider (`/c/...`) for å finne produkter, produktsider for priser per butikk og historikk. Søk (`/search`) er forbudt i robots.txt og brukes ikke.
 - **Klarna:** kategori- og produktsider, priser per butikk fra sidens strukturerte data. Klarna har ingen før-pris, og prishistorikk-sidene er forbudt i robots.txt.
+- Prisjakt viser én rad per variant (størrelse, farge, lagring). Prisen per butikk er butikkens billigste variant på lager. Før november 2026 kunne en tilfeldig variant bli lagret, så for slike produkter ses det bort fra eldre priser per butikk.
+- Mobiloperatører (Telia, Telenor, Talkmore, ice m.fl.) tas ikke med: telefonprisene deres krever som regel et abonnement eller en rabattavtale. Slike priser fjernes også fra Prisjakts «laveste pris»-historikk.
 - Produkter kobles ikke på tvers av sidene.
 - robots.txt respekteres, og det er minst 2 sekunders pause mellom forespørsler. Verktøyet forsøker aldri å omgå bot-beskyttelse.
 

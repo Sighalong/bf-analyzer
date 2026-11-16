@@ -163,6 +163,30 @@ class MarketAndCounts(StoreCase):
         self.assertEqual(self.s.shop_product_counts("2030-01-01"), {})
 
 
+class LoadForAnalysis(StoreCase):
+    def test_iter_products_matches_series_and_skips_products_without_today(self):
+        self.s.save_product(product("1", offers=[offer("A", 100.0), offer("B", 300.0)]), "2026-10-01")
+        self.s.save_product(product("1", offers=[offer("A", 110.0)], history=[("2026-10-02", 90.0)]),
+                            "2026-10-02", lowest_shop="(laveste)")
+        self.s.save_product(product("2", offers=[offer("A", 5.0)]), "2026-10-01")      # nothing on 10-02
+        self.s.save_product(product("3", source="klarna", offers=[offer("K", 7.0)]), "2026-10-02")
+        got = list(self.s.iter_products("2026-10-02"))
+        self.assertEqual([(g[0], g[1]) for g in got], [("klarna", "3"), ("prisjakt", "1")])
+        shops = got[1][5]
+        self.assertEqual(sorted(shops), ["(laveste)", "A", "B"])
+        for shop, rows in shops.items():
+            self.assertEqual(rows, self.s.series("prisjakt", "1", shop))
+        self.assertEqual(got[1][2:5], ("T", "http://u/1", None))
+
+    def test_variant_products_keep_their_first_day(self):
+        p = product("1", offers=[offer("A", 1.0)])
+        p["variants"] = True
+        self.s.save_product(p, "2026-11-17")
+        self.s.save_product(p, "2026-11-18")
+        self.s.save_product(product("2", offers=[offer("A", 1.0)]), "2026-11-17")    # no variants
+        self.assertEqual(self.s.clean_since(), {("prisjakt", "1"): "2026-11-17"})
+
+
 class DailySteps(unittest.TestCase):
     def test_fill_forward(self):
         self.assertEqual(_daily_steps([("2026-01-01", 10.0), ("2026-01-03", 8.0)], "2026-01-05"), [
