@@ -65,8 +65,15 @@ def _files():
     return sorted(n for n in os.listdir(OUTPUT_DIR) if not n.startswith(".") and not n.endswith(("-wal", "-shm")))
 
 
+def _data_mtime():
+    """When the page's data last changed: the report written at the end of every collection or report,
+    so a half-hour collection gives one rebuild instead of one every REBUILD_SECONDS. Else the database."""
+    rep = os.path.join(OUTPUT_DIR, "bfa_report.csv")
+    return os.path.getmtime(rep) if os.path.exists(rep) else _db_mtime(default_path())
+
+
 def _page_key():
-    return (_db_mtime(default_path()), net.today_oslo(), _run_lock.locked())
+    return (_data_mtime(), net.today_oslo(), _run_lock.locked())
 
 
 def _build_page():

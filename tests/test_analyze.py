@@ -223,6 +223,47 @@ class DataDay(unittest.TestCase):
         self.assertTrue(analyze.analyze(s, day))
 
 
+class StoreLevel(unittest.TestCase):
+    """analyze() over a store: variant products' old rows and operators' plan prices are ignored."""
+
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        self.s = Store(os.path.join(d, "t.sqlite"))
+        self.addCleanup(self.s.close)
+
+    def save(self, pid, shop, prices, variants_from=None, lowest=None):
+        """prices: one per day ending today. variants_from: age (days back) when the parser marked variants."""
+        for i, price in enumerate(prices):
+            age = len(prices) - 1 - i
+            p = {"source": "prisjakt", "product_id": pid, "title": "T", "url": "u",
+                 "lowest_history": [(day_back(TODAY, age), lowest)] if lowest else [],
+                 "offers": [{"shop": shop, "price": price, "original_price": None, "in_stock": True}],
+                 "variants": variants_from is not None and age <= variants_from}
+            self.s.save_product(p, day_back(TODAY, age), lowest_shop="(laveste)" if lowest else None)
+
+    def test_rows_before_variant_fix_are_ignored(self):
+        # a random variant made the old rows look expensive; the clean price since the fix is ~normal
+        self.save("1", "A", [1500.0] * 80 + [1000.0] * 10, variants_from=9)
+        self.assertEqual(analyze.analyze(self.s, TODAY), [])
+        self.save("2", "A", [1500.0] * 80 + [1000.0] * 10)                     # no fix: looks like a deal
+        self.assertEqual([(f.product_id, f.rule) for f in analyze.analyze(self.s, TODAY)], [("2", "deal")])
+
+    def test_cheapest_history_of_a_variant_product_is_kept(self):
+        self.save("1", "A", [1000.0] * 90, variants_from=5, lowest=1000.0)
+        self.save("1", "B", [1000.0] * 90, lowest=None)
+        rows = {f.shop for f in analyze.analyze(self.s, TODAY)}
+        self.assertEqual(rows, set())
+        self.assertEqual(len(self.s.series("prisjakt", "1", "(laveste)")), 90)
+
+    def test_operator_series_are_skipped(self):
+        self.save("1", "Telenor.no", [1500.0] * 80 + [1000.0] * 10)
+        self.save("2", "Chilimobil", [1500.0] * 80 + [1000.0] * 10)
+        self.assertEqual([f.shop for f in analyze.analyze(self.s, TODAY)], ["Chilimobil"])
+        self.assertTrue(analyze.plan_shop("Telia") and analyze.plan_shop("telenor.no") and analyze.plan_shop("ICE"))
+        self.assertFalse(analyze.plan_shop("Iceland") or analyze.plan_shop("Chilimobil") or analyze.plan_shop(None))
+
+
 class Asleep(unittest.TestCase):
     def test_sleeps_from_new_year_to_august(self):
         self.assertIsNone(analyze.asleep("2026-12-31"))         # romjul sales are still followed

@@ -39,6 +39,11 @@ class ParseSynthetic(unittest.TestCase):
     def parse(self, offers_obj):
         return klarna.parse_product(page_with({"@type": "Product", "name": "N", "offers": offers_obj}), "1", "u")
 
+    def test_operator_plan_prices_are_skipped(self):
+        p = self.parse({"@type": "AggregateOffer", "offers": [offer("Telia", 9490), offer("Telenor.no", 9490),
+                                                                offer("Talkmore", 9990), offer("Chilimobil", 12490)]})
+        self.assertEqual([o["shop"] for o in p["offers"]], ["Chilimobil"])
+
     def test_dedup_keeps_cheapest_variant_per_shop(self):
         p = self.parse({"@type": "AggregateOffer", "offers": [
             offer("Shop A", "1200.00"), offer("Shop B", "900.00"), offer("Shop A", "1000.00"),

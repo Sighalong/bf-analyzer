@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS flags (
     PRIMARY KEY (rule, source, product_id, shop)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS variant_products (
+    source TEXT NOT NULL, product_id TEXT NOT NULL, since TEXT NOT NULL,
+    PRIMARY KEY (source, product_id)
+);
 """
 
 
@@ -57,7 +61,36 @@ class Store(object):
             for hday, price in _daily_steps(p["lowest_history"], day):
                 rows.append((p["source"], p["product_id"], lowest_shop, hday, price, None, 1))
         c.executemany("INSERT OR REPLACE INTO prices VALUES (?,?,?,?,?,?,?)", rows)
+        if p.get("variants"):
+            # per-shop rows before this day may hold a random variant's price (parser before Nov 2026)
+            c.execute("INSERT OR IGNORE INTO variant_products VALUES (?,?,?)", (p["source"], p["product_id"], day))
         c.commit()
+
+    def clean_since(self):
+        """{(source, product_id): first day its per-shop prices are one clean price per shop}."""
+        return {(s, p): d for s, p, d in self.db.execute("SELECT source, product_id, since FROM variant_products")}
+
+    def iter_products(self, day):
+        """Per product with a price on `day`: (source, product_id, title, url, category, {shop: rows}).
+
+        One ordered read instead of a query per series, one product in memory at a time (a Pi 1B).
+        rows are [(day, price, original_price, in_stock)] by day. Products without a price on `day`
+        are skipped: analyze_series needs today's price for any finding.
+        """
+        cur = self.db.execute(
+            "SELECT p.source, p.product_id, p.shop, p.day, p.price, p.original_price, p.in_stock, "
+            "pr.title, pr.url, pr.category FROM prices p JOIN products pr USING (source, product_id) "
+            "WHERE (p.source, p.product_id) IN (SELECT DISTINCT source, product_id FROM prices WHERE day=?) "
+            "ORDER BY p.source, p.product_id, p.shop, p.day", (day,))
+        key, info, shops = None, None, {}
+        for source, pid, shop, d, price, orig, stock, title, url, category in cur:
+            if (source, pid) != key:
+                if key:
+                    yield key + info + (shops,)
+                key, info, shops = (source, pid), (title, url, category), {}
+            shops.setdefault(shop, []).append((d, price, orig, stock))
+        if key:
+            yield key + info + (shops,)
 
     def tracked(self, source, since_days=45, today=None):
         """Products seen recently, least recently refreshed first."""

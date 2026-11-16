@@ -1,6 +1,7 @@
 """Polite HTTP fetching (stdlib only): robots.txt check, per-host delay, gzip, retries."""
 import gzip
 import re
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -86,6 +87,18 @@ def _wait_turn(url):
     _last_hit[host] = time.monotonic()
 
 
+_opener = None
+
+
+def _get_opener():
+    """One opener with one SSL context for the whole run. urlopen() without one builds a new default
+    context per request, and loading the CA bundle costs ~2 s of CPU per page on a Pi 1B."""
+    global _opener
+    if _opener is None:
+        _opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    return _opener
+
+
 def _http_get(url):
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
@@ -93,7 +106,7 @@ def _http_get(url):
         "Accept-Encoding": "gzip",
         "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
     })
-    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+    with _get_opener().open(req, timeout=TIMEOUT_S) as r:
         body = r.read()
         if r.headers.get("Content-Encoding") == "gzip":
             body = gzip.decompress(body)

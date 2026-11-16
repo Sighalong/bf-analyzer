@@ -3,7 +3,7 @@ import html as htmllib
 import json
 import re
 
-from . import net
+from . import analyze, net
 
 BASE = "https://www.prisjakt.no"
 NAME = "prisjakt"
@@ -99,7 +99,14 @@ def _amount(x):
     return float(x) if isinstance(x, (int, float)) and x > 0 else None
 
 
+_CAMPAIGN_RE = re.compile(r"\s+-\s+[^-]{1,40}:\s*fra\s+[\d\s\u00a0.,]+\s*kr\s*$", re.I)   # " - Black Friday: fra 7 990 kr"
+
+
 def _title(page, text):
+    return _CAMPAIGN_RE.sub("", _raw_title(page, text) or "") or None
+
+
+def _raw_title(page, text):
     m = re.search(r'<script[^>]*application/ld\+json[^>]*>(\{"@context":"https://schema.org","@type":"Product".*?)</script>',
                   page, re.S)
     if m:
@@ -111,15 +118,30 @@ def _title(page, text):
     return htmllib.unescape(re.sub(r"\s*-\s*Sammenlign priser.*$", "", t.group(1)).strip()) if t else None
 
 
+def _better(a, b):
+    """True if offer a beats b as the shop's price: in stock first, then cheapest."""
+    return (not a["in_stock"], a["price"]) < (not b["in_stock"], b["price"])
+
+
 def parse_product(page, pid):
+    """Offers (one per shop), the site's cheapest-price history and current lowest price.
+
+    Since Nov 2026 offerRows has one row per variant (size, colour, storage). A shop's price is its
+    cheapest in-stock variant (else its cheapest), like klarna.parse_product; storing every row let a
+    random variant win the shop's daily price. "variants" (a shop has rows at different prices) tells
+    the store that the old per-shop rows for this product may be mixed.
+    """
     text = flight_text(page)
 
-    offers, seen = [], set()
+    by_shop, seen, shop_prices = {}, set(), {}
+    member_only, open_shop = set(), set()   # shopIds whose offers here all need a paid membership/plan
     for rows in _arrays_after(text, "offerRows"):
         for o in rows if isinstance(rows, list) else []:
             if not isinstance(o, dict) or str(o.get("productId")) != str(pid):
                 continue
-            if o.get("id") in seen or o.get("isPaidMembership") or o.get("condition") not in (None, "New"):
+            (member_only if o.get("isPaidMembership") else open_shop).add(o.get("shopId"))
+            if (o.get("id") in seen or o.get("isPaidMembership") or o.get("priceType") == "MemberPrice"
+                    or o.get("condition") not in (None, "New")):
                 continue
             seen.add(o.get("id"))
             price = _amount(o.get("price"))
@@ -127,19 +149,32 @@ def parse_product(page, pid):
                 continue
             orig = _amount(o.get("originalPrice"))
             shop = (o.get("shop") or {}).get("name") or str(o.get("shopId"))
-            offers.append({
+            if analyze.plan_shop(shop):
+                continue
+            offer = {
                 "shop": shop,
                 "price": price,
                 "original_price": orig if orig and orig > price else None,
                 "in_stock": o.get("stockStatus") == "InStock",
-            })
+            }
+            shop_prices.setdefault(shop, set()).add(price)
+            if shop not in by_shop or _better(offer, by_shop[shop]):
+                by_shop[shop] = offer
+    offers = list(by_shop.values())
+    plan_only = member_only - open_shop
 
     history = []
     for items in _arrays_after(text, "historyItems"):
         if isinstance(items, list) and items:
             for h in items:
-                if isinstance(h, dict) and h.get("price") and h.get("date") and not h.get("isPaidMembership"):
-                    history.append((net.oslo_day(h["date"]), h["price"] / 100.0))  # øre -> kr
+                if not (isinstance(h, dict) and h.get("price") and h.get("date")):
+                    continue
+                # a plan or member price (e.g. "3 000,- i rabatt med 12 md. rabattavtale") is not a price
+                # anyone can pay; Prisjakt doesn't always mark it, so also drop shops that only sell that way
+                if (h.get("isPaidMembership") or h.get("isMembershipPrice") or h.get("shopId") in plan_only
+                        or analyze.plan_shop(h.get("shopName"))):
+                    continue
+                history.append((net.oslo_day(h["date"]), h["price"] / 100.0))  # øre -> kr
             break
 
     lowest_now = None
@@ -156,4 +191,6 @@ def parse_product(page, pid):
         "offers": offers,
         "lowest_history": history,
         "lowest_now": lowest_now,
+        # only a shop with rows at different prices made the stored price depend on which row came last
+        "variants": any(len(v) > 1 for v in shop_prices.values()),
     }
