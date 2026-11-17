@@ -187,6 +187,31 @@ class LoadForAnalysis(StoreCase):
         self.assertEqual(self.s.clean_since(), {("prisjakt", "1"): "2026-11-17"})
 
 
+class PageData(StoreCase):
+    def test_popularity_counts_in_stock_shops_and_best_rank(self):
+        self.s.save_product(product("1", offers=[offer("A", 1.0), offer("B", 2.0), offer("C", 3.0, stock=False)]),
+                            "2026-10-02")
+        self.s.save_ranks("prisjakt", "tv", ["9", "1", "8", "7"], "2026-10-02")
+        self.s.save_ranks("prisjakt", "mobil", ["1", "6"], "2026-10-01")      # best place wins
+        self.s.save_ranks("prisjakt", "jakke", ["5"], "2026-09-01")            # older than 14 days: ignored
+        pop = self.s.popularity("2026-10-02")
+        self.assertEqual(pop[("prisjakt", "1")], (2, 1.0))
+        self.assertEqual(pop[("prisjakt", "8")], (0, 0.5))
+        self.assertNotIn(("prisjakt", "5"), pop)
+
+    def test_shop_prices_for_given_products_cheapest_first(self):
+        self.s.save_product(product("1", offers=[offer("A", 5.0), offer("B", 3.0)],
+                                    history=[("2026-10-02", 1.0)]), "2026-10-02", lowest_shop="(laveste)")
+        self.s.save_product(product("2", offers=[offer("A", 9.0)]), "2026-10-02")
+        got = self.s.shop_prices("2026-10-02", {("prisjakt", "1")})
+        self.assertEqual(got, {("prisjakt", "1"): [("B", 3.0, None, 1), ("A", 5.0, None, 1)]})
+
+    def test_collected_per_source(self):
+        self.s.set_meta("collected_prisjakt", "2026-10-02 06:40")
+        self.s.set_meta("flags_last", "2026-10-02")
+        self.assertEqual(self.s.collected(), {"prisjakt": "2026-10-02 06:40"})
+
+
 class DailySteps(unittest.TestCase):
     def test_fill_forward(self):
         self.assertEqual(_daily_steps([("2026-01-01", 10.0), ("2026-01-03", 8.0)], "2026-01-05"), [

@@ -134,9 +134,20 @@ def save_csv(path, findings):
             w.writerow(["" if d[c] is None else d[c] for c in cols])
 
 
-def save_markdown(path, findings, stats, shops=(), top=25):
+def save_markdown(path, findings, stats, shops=(), top=25, groups=None):
+    """groups: analyze.rank_products(...) output, adds the top 5 lists."""
     lines = ["# Black Friday-analyse", "",
              "Data: {products} produkter, {first_day} → {last_day}.".format(**stats), ""]
+    for key, head in (("trick", "Topp 5 lureri"), ("buy", "Topp 5 beste kjøp")):
+        if groups is None:
+            break
+        lines += ["## " + head, ""]
+        rows = analyze.top(groups, key)
+        lines += ["{}. [{}]({}) – {}".format(i, g["title"].replace("|", "/"), g["url"], _top_line(g, key))
+                  for i, g in enumerate(rows, 1)] or ["_Ingen ennå._"]
+        lines.append("")
+    if groups is not None:
+        lines += ["_" + TOP_WHY + "_", ""]
     for t in TYPES:
         rows = [f for f in findings if f.rule == t.rule][:top]
         lines += ["## " + t.name, "", t.means + " _Kriterium: " + t.measured + " " + level_text(t) + "_", ""]
@@ -274,6 +285,10 @@ def chart_svg(f, w=320, h=132, bf=None):
         out.append('<line class="claim" x1="{}" x2="{}" y1="{:.1f}" y2="{:.1f}"><title>før-pris {} kr</title></line>'.format(
             L, w - R, y, y, kr(f.claimed)))
         out.append(label(w - R, y - 4, "oppgitt før-pris " + kr(f.claimed) + " kr", "lb claiml", "end"))
+    mk = [(d, p) for d, p in (getattr(f, "market", None) or []) if lo <= p <= hi]
+    if len(mk) > 1 and not f.shop.startswith("("):   # median of all shops: is this shop out of line?
+        out.append('<path class="mk" d="{}"><title>median alle butikker</title></path>'.format(
+            " ".join("{}{:.1f},{:.1f}".format("M" if i == 0 else "L", X(d), Y(p)) for i, (d, p) in enumerate(mk))))
     path = "M{:.1f},{:.1f}".format(X(pts[0][0]), Y(pts[0][1]))
     for d, p in pts[1:]:                         # step line: a price holds until the next observation
         path += " H{:.1f} V{:.1f}".format(X(d), Y(p))
@@ -423,31 +438,174 @@ def _when(f, bf=None):
     return ""
 
 
-def _card(f, bf=None, first=None, new=False):
+TONE_ORDER = {"bad": 0, "warn": 1, "good": 2}
+TRICK_RULES = ("fake_discount", "before_price", "hike")
+
+
+def _tone(g):
+    return min((TYPE[f.rule].tone for f in g["findings"]), key=TONE_ORDER.get)
+
+
+def product_id_attr(g):
+    return "p-{}-{}".format(g["source"], re.sub(r"[^A-Za-z0-9_-]", "", str(g["product_id"])))
+
+
+def _window_text(f):
+    win = baseline_window(f.baseline, (f.series or [[""]])[-1][0]) if f.series else None
+    if win:
+        return "{}–{}".format(nice_day(win[0].strftime("%Y-%m-%d")), nice_day(win[1].strftime("%Y-%m-%d")))
+    return nice_baseline(f.baseline)
+
+
+def basis(f):
+    """What the finding is measured against, in plain words, so it can be checked by hand."""
+    who = "laveste pris blant butikkene" if f.shop.startswith("(") else f.shop
+    if f.rule == "before_price":
+        return ("Butikken oppgir før-pris {} kr. Laveste pris de 30 dagene før prisen ble satt ned var {} kr "
+                "({} dager med priser). Nå {} kr.").format(kr(f.claimed), kr(f.low30), f.days, kr(f.now))
+    out = "Normalpris {} kr = median for {} {}. Bygger på {} dager med priser.".format(
+        kr(f.base_median), who, _window_text(f), f.days)
+    if f.rule == "deal":
+        out += " Vanlig lavpris {} kr.".format(kr(f.base_low))
+    if f.peak and f.rule != "deal":
+        out += " Høyeste {} kr {}.".format(kr(f.peak), nice_day(f.peak_day))
+    return out + " Nå {} kr.".format(kr(f.now))
+
+
+def price_steps(series, n=10):
+    """The days the price changed: [(day, price)], the last n."""
+    out = []
+    for d, p in series or []:
+        if not out or abs(out[-1][1] - p) >= 1:
+            out.append((d, p))
+    return out[-n:]
+
+
+def _steps_html(f):
+    steps = price_steps(f.series)
+    if len(steps) < 2:
+        return ""
+    return "<p class='steps'><b>Prisendringer:</b> {}</p>".format(_nb(" → ".join(
+        "{} {} kr".format(nice_day(d), kr(p)) for d, p in steps)))
+
+
+def _available(g, prices):
+    """Today's in-stock offers [(shop, price)], cheapest first; from the findings when prices are missing."""
+    rows = [(s, p) for s, p, _, stock in (prices or {}).get((g["source"], g["product_id"]), [])
+            if stock and not analyze.plan_shop(s)]
+    if not rows:
+        rows = [(f.shop, f.now) for f in g["findings"] if f.now and not f.shop.startswith("(")]
+    return sorted(rows, key=lambda r: r[1])
+
+
+def _shop_table(g, prices):
+    """Every shop's price today; shops with a finding get its normal price, change and type."""
     e = html.escape
-    lv = level(f)
-    meta = [e(f.source.capitalize())]
-    meta.append("{} dager med priser".format(f.days) if f.days else "mangler data")
-    if f.baseline:
-        meta.append("normalpris målt " + e(nice_baseline(f.baseline)))
-    if first:
-        meta.append("flagget siden " + e(nice_day(first)))
-    text = " ".join([f.title, shop_name(f), category_name(f.category)]).lower()
-    return ("<article class='card {r}{nw}' data-cat='{cat}' data-shop='{shop}' data-q='{q}' data-first='{first}' "
-            "data-level='{lv}' data-amount='{amt}'><div class='main'><p class='hd'>{tag}"
-            "<span class='tag seen' hidden>Ny siden sist</span><a class='t' href='{url}'>{title}</a></p>"
-            "<p class='shop'>{shopname} · {catname}</p><p class='pr' title='{story}'>{prices}</p>{when}"
-            "<small>{meta}</small></div>"
-            "<div class='badge'><b>{chg}</b><span class='cap'>{cap}</span>"
-            "<span class='lvl l{lv}' title='Grad: {lvn}'><i></i><i></i><i></i>{lvn}</span></div>"
-            "<button type='button' class='gbtn' aria-expanded='false'>Vis graf</button>"
-            "<div class='chart'>{chart}</div></article>").format(
-        r=f.rule, nw=" new" if new else "", cat=e(f.category or ""), shop=e(shop_name(f)), q=e(text),
-        first=e(first or ""), lv=lv, amt=amount(f), tag="<span class='tag ny'>NY</span>" if new else "",
-        url=e(f.url), title=e(f.title), shopname=e(shop_name(f)), catname=e(category_name(f.category)),
-        prices=_prices(f), story=e(_nb(story(f, bf))),
-        when="<p class='st'>{}</p>".format(e(_nb(_when(f, bf)))) if _when(f, bf) else "", meta=" · ".join(meta), chg=e(_nb(change(f))),
-        cap=e(TYPE[f.rule].badge), lvn=LEVEL_NAMES[lv - 1], chart=chart_svg(f, bf=bf))
+    by_shop = {}
+    for i, f in enumerate(g["findings"]):
+        by_shop.setdefault(f.shop, []).append((i, f))
+    rows, seen = [], set()
+    offers = [(s, p, stock) for s, p, _, stock in (prices or {}).get((g["source"], g["product_id"]), [])
+              if not analyze.plan_shop(s)]
+    for f in g["findings"]:
+        if f.shop not in {o[0] for o in offers}:
+            offers.append((f.shop, f.now, 1))
+    offers.sort(key=lambda o: (not o[2], o[1]))
+    for shop, price, stock in offers[:30]:
+        if shop in seen:
+            continue
+        seen.add(shop)
+        fs = by_shop.get(shop, [])
+        if not fs:
+            rows.append("<tr class='quiet'><td>{}</td><td class='num'>{} kr{}</td><td>–</td><td></td><td></td></tr>".format(
+                e(shop), kr(price), "" if stock else " <small>(utsolgt)</small>"))
+            continue
+        for i, f in fs:
+            ref = f.low30 if f.rule == "before_price" else f.base_median
+            rows.append("<tr class='hit' data-i='{i}' tabindex='0' title='Vis grunnlag og graf'><td>{shop}</td>"
+                        "<td class='num'>{now} kr</td><td class='num'>{ref}</td><td class='num'>{chg}</td>"
+                        "<td title='{name}'><span class='dot {tone}'></span><span class='fnm'>{name}</span></td></tr>".format(
+                            i=i, shop=e(shop_name(f)), now=kr(f.now), ref=(kr(ref) + " kr") if ref else "–",
+                            chg=e(change(f)), tone=TYPE[f.rule].tone, name=e(TYPE[f.rule].name)))
+    return ("<div class='tw'><table class='shops'><tr><th scope='col'>Butikk</th><th scope='col'>Nå</th>"
+            "<th scope='col'>Normal</th><th scope='col'>Endring</th><th scope='col'>Funn</th></tr>{}</table></div>"
+            ).format("".join(rows))
+
+
+def _top_fig(g, which):
+    """The number a top-5 row shows on the right."""
+    f = g[which + "_f"]
+    return _nb(change(f) if which == "trick" else kr(f.now) + " kr")
+
+
+def _top_why(g, which):
+    """The short reason under a top-5 row."""
+    f = g[which + "_f"]
+    if which == "trick":
+        shops = len({x.shop for x in g["findings"] if x.rule in TRICK_RULES})
+        where = "laveste pris blant butikkene" if f.shop.startswith("(") else f.shop
+        return "{} · {}{}".format(TYPE[f.rule].name, where, " +{} butikker".format(shops - 1) if shops > 1 else "")
+    return "{} under vanlig lavpris · {}".format(_nb(pct(f.score).lstrip("+")), f.shop)
+
+
+def _top_line(g, which):
+    return "{} – {}".format(_top_fig(g, which), _top_why(g, which))
+
+
+def _card(g, bf=None, flags=None, day=None, prices=None, collected=None):
+    e = html.escape
+    fs = g["findings"]
+    main = fs[0]
+    firsts = [first_day(f, flags, day) for f in fs] if (flags or {}).get("since") else []
+    new = any(is_new(f, flags, day) for f in fs)
+    lv = max(level(f) for f in fs)
+    avail = _available(g, prices)
+    listed = {s for s, _, _, _ in (prices or {}).get((g["source"], g["product_id"]), []) if not analyze.plan_shop(s)}
+    shops = sorted(listed | {s for s, _ in avail} | {shop_name(f) for f in fs})
+    labels = []
+    for f in sorted(fs, key=lambda x: (TONE_ORDER[TYPE[x.rule].tone], -(x.score or 0))):
+        key = (f.rule, TYPE[f.rule].tone)
+        if key in [l[0] for l in labels]:
+            continue
+        n = sum(1 for x in fs if x.rule == f.rule)
+        labels.append((key, "<span class='lab {}'>{}{}</span>".format(
+            TYPE[f.rule].tone, e(TYPE[f.rule].name), " <small>· {} butikker</small>".format(n) if n > 1 else "")))
+    cheap = ("Billigst nå <b>{} kr</b> hos {}".format(kr(avail[0][1]), e(avail[0][0])) if avail else "")
+    if len(avail) > 1:
+        cheap += " · {} butikker".format(len(avail))
+    meta = [e(g["source"].capitalize()), e(category_name(g["category"]))]
+    if firsts:
+        meta.append("flagget siden " + e(nice_day(min(firsts))))
+    evidence = "".join(
+        "<div class='ev'{hid} data-i='{i}'><p class='basis'><b>{shop}, {name}:</b> {basis}</p>{chart}{steps}</div>".format(
+            hid="" if i == 0 else " hidden", i=i, shop=e(shop_name(f)), name=e(TYPE[f.rule].name).lower(),
+            basis=e(_nb(basis(f))), chart=chart_svg(f, bf=bf), steps=_steps_html(f))
+        for i, f in enumerate(fs))
+    src = "Hentet fra {}{}.".format(g["source"].capitalize(),
+                                     " " + nice_day(collected[:10]) + " kl. " + collected[11:16] if collected else "")
+    q = " ".join([g["title"], category_name(g["category"])] + shops).lower()
+    return ("<article class='card {tone}{nw}' id='{id}' data-cat='{cat}' data-shops='|{shops}|' data-q='{q}' "
+            "data-rules=' {rules} ' data-first='{first}' data-level='{lv}' data-amount='{amt}' data-pop='{pop:.3f}' "
+            "data-trick='{trick:.4f}' data-buy='{buy:.4f}' data-tf='{tf}' data-tl='{tl}' data-bf='{bfig}' data-bl='{bl}' "
+            "data-title='{title}'>"
+            "<div class='head'><p class='hd'>{tag}<span class='tag seen' hidden>Ny siden sist</span>"
+            "<a class='t' href='{url}'>{title}</a></p><p class='badge'><b>{chg}</b><span class='cap'>{cap}</span></p></div>"
+            "<p class='labs'>{labels}<span class='lvl l{lv}' title='Grad: {lvn}'><i></i><i></i><i></i>{lvn}</span></p>"
+            "<p class='pr'>{cheap}</p><p class='st'>{story}</p>"
+            "<details class='chk'><summary><span class='meta'>{meta}</span><span class='open'>Kontroller</span></summary>"
+            "<p class='hint'>Trykk på en butikk med funn for å se grunnlaget og grafen.</p>{table}{evidence}"
+            "<p class='src'>{src} <a href='{url}'>Åpne produktsiden og sjekk prisene selv</a></p></details>"
+            "</article>").format(
+        tone=_tone(g), nw=" new" if new else "", id=product_id_attr(g), cat=e(g["category"] or ""),
+        shops=e("|".join(shops)), q=e(q), rules=" ".join(sorted({f.rule for f in fs})),
+        first=e(max(firsts) if firsts else ""), lv=lv, amt=max(amount(f) for f in fs), pop=g.get("pop", 0),
+        trick=g.get("trick", 0), buy=g.get("buy", 0),
+        tl=e(_top_why(g, "trick")) if g.get("trick_f") else "", bl=e(_top_why(g, "buy")) if g.get("buy_f") else "",
+        tf=e(_top_fig(g, "trick")) if g.get("trick_f") else "", bfig=e(_top_fig(g, "buy")) if g.get("buy_f") else "",
+        title=e(g["title"]), tag="<span class='tag ny'>NY</span>" if new else "", url=e(g["url"]),
+        labels="".join(l[1] for l in labels), cheap=cheap, story=e(_nb(story(main, bf))), meta=" · ".join(meta),
+        chg=e(_nb(change(main))), cap=e(TYPE[main.rule].badge), lvn=LEVEL_NAMES[lv - 1],
+        table=_shop_table(g, prices), evidence=evidence, src=e(src))
 
 
 def countdown(days):
@@ -554,20 +712,6 @@ def _summary(findings, shops, ph, news=""):
         cls, head, "<p class='worst'>Flest flagg: " + worst + "</p>" if worst else "", news)
 
 
-def _overview(findings, ph, new_by_rule=None):
-    """One tab per finding type with its count and how many are new; a click shows that list."""
-    if not findings:
-        return ""
-    chips = []
-    for t in sections(ph["phase"]):
-        n = sum(1 for f in findings if f.rule == t.rule)
-        k = (new_by_rule or {}).get(t.rule, 0)
-        chips.append("<a class='chip {tone}{zero}' href='#t-{r}' data-open='{r}' role='tab'><b>{n}</b> {name}{nw}</a>"
-                     .format(tone=t.tone, zero=" zero" if not n else "", r=t.rule, n=n, name=html.escape(t.name),
-                             nw=" <span class='nw'>+{} ny</span>".format(k) if k else ""))
-    return "<nav class='chips' role='tablist' aria-label='Funn per type'>{}</nav>".format("".join(chips))
-
-
 def _shops_table(shops):
     e = html.escape
     if not shops:
@@ -586,69 +730,138 @@ def _shops_table(shops):
         e(SHOPS_TITLE), len(shops), e(SHOPS_TITLE), rows)
 
 
-def _filters(findings):
+def _finder(groups):
+    """Search box and category buttons, always visible at the top."""
     e = html.escape
-    cats = sorted({f.category or "" for f in findings}, key=category_name)
-    shops = sorted({shop_name(f) for f in findings}, key=str.lower)
+    if not groups:
+        return ""
+    count = {}
+    for g in groups:
+        count[g["category"] or ""] = count.get(g["category"] or "", 0) + 1
+    cats = sorted(count, key=lambda c: (-count[c], category_name(c)))
+    btn = "<button type='button' class='cat' data-cat='{}' aria-pressed='{}'>{} <b>{}</b></button>"
+    return ("<section class='finder'><input id='fq' type='search' placeholder='Søk etter produkt, f.eks. iPhone 17' "
+            "aria-label='Søk etter produkt eller butikk'><nav class='cats' aria-label='Kategori'>{}{}</nav>"
+            "<select id='fcat' class='sr' aria-label='Kategori'><option value=''>Alle</option>{}</select></section>"
+            ).format(btn.format("", "true", "Alle", len(groups)),
+                     "".join(btn.format(e(c), "false", e(category_name(c)), count[c]) for c in cats),
+                     "".join("<option value='{0}'>{0}</option>".format(e(c)) for c in cats))
+
+
+TOP_WHY = ("Rangert etter hvor stort avviket er (hopp over 100 % teller mindre, de er oftere feil i dataene), hvor populær varen er (antall butikker som selger den og "
+           "plassering i kategorilisten) og hvor mange butikker som gjør det samme. Beste kjøp må være billigst "
+           "i dag, på lager, minst {} under vanlig lavpris, og teller mindre med under {} dager prishistorikk "
+           "eller når en annen butikk lurer på samme vare.").format(_p(analyze.BUY_MIN), analyze.BUY_FULL_DAYS)
+
+
+TOP_ROW = ("<li><a href='#{id}'><span class='tt'>{title}</span><b class='fig'>{fig}</b></a>"
+           "<small>{why}</small></li>")
+
+
+def _top_list(groups, key):
+    e = html.escape
+    rows = analyze.top(groups, key)
+    if not rows:
+        return "<li class='none'>Ingen ennå.</li>"
+    return "".join(TOP_ROW.format(id=product_id_attr(g), title=e(g["title"]), fig=e(_top_fig(g, key)),
+                                  why=e(_top_why(g, key))) for g in rows)
+
+
+def _tops(groups):
+    if not groups:
+        return ""
+    return ("<section class='tops'><div class='top bad'><h2>Topp 5 lureri</h2><ol id='toptrick'>{}</ol></div>"
+            "<div class='top good'><h2>Topp 5 beste kjøp</h2><ol id='topbuy'>{}</ol></div>"
+            "<details class='why'><summary>Slik rangeres listene</summary><p>{}</p></details></section>").format(
+                _top_list(groups, "trick"), _top_list(groups, "buy"), html.escape(TOP_WHY))
+
+
+def _filters(findings):
+    """One compact row: what to show and how to sort; the rest folds away under "Flere filter"."""
+    e = html.escape
     if not findings:
         return ""
-    opt = lambda v, label: "<option value='{}'>{}</option>".format(e(v), e(label))  # noqa: E731
-    return ("<details class='fbox' open><summary>Filter og sortering <span id='fn'></span></summary>"
-            "<form class='filters' role='search' onsubmit='return false'>"
-            "<label>Kategori <select id='fcat'><option value=''>Alle</option>{}</select></label>"
-            "<label>Butikk <select id='fshop'><option value=''>Alle</option>{}</select></label>"
+    shops = sorted({shop_name(f) for f in findings}, key=str.lower)
+    types = "".join("<option value='{}'>{}</option>".format(t.rule, e(t.name)) for t in TYPES)
+    seg = "".join("<button type='button' data-type='{}' aria-pressed='{}'>{}</button>".format(v, "true" if not v else "false", n)
+                  for v, n in (("", "Alle"), ("bad", "Lureri"), ("deal", "Gode kjøp")))
+    return ("<form class='bar' role='search' onsubmit='return false'><div class='vis' role='group' aria-label='Vis'>{seg}"
+            "</div><label class='inl'>Sorter <select id='fsort'><option value=''>Størst avvik</option>"
+            "<option value='pop'>Mest populær</option><option value='new'>Nyeste først</option>"
+            "<option value='cat'>Kategori</option><option value='kr'>Flest kroner</option></select></label>"
+            "<details class='moref'><summary>Flere filter <span id='fact'></span></summary><div class='filters'>"
+            "<label>Type <select id='ftype'><option value=''>Alle funn</option><option value='bad'>Bare lureri"
+            "</option><option value='deal'>Bare gode kjøp</option>{types}</select></label>"
             "<label>Grad <select id='flvl'><option value=''>Alle</option><option value='2'>Tydelig og kraftig"
             "</option><option value='3'>Bare kraftig</option></select></label>"
-            "<label>Sorter <select id='fsort'><option value=''>Størst først</option>"
-            "<option value='new'>Nyeste først</option><option value='kr'>Flest kroner</option></select></label>"
-            "<label>Søk <input id='fq' type='search' placeholder='f.eks. Samsung'></label>"
-            "<label class='chk'><input type='checkbox' id='fnew'> Bare nye</label>"
-            "<button type='button' id='freset'>Nullstill</button></form></details>").format(
-        "".join(opt(c, category_name(c)) for c in cats), "".join(opt(s, s) for s in shops))
+            "<label>Butikk <select id='fshop'><option value=''>Alle</option>{shops}</select></label>"
+            "<label class='box'><input type='checkbox' id='fnew'> Bare nye</label>"
+            "<button type='button' id='freset'>Nullstill</button></div></details></form>").format(
+        seg=seg, types=types, shops="".join("<option value='{0}'>{0}</option>".format(e(x)) for x in shops))
 
 
-# Plain ES5, no libraries. Without it the page still shows every list, chart and filter-free card.
+# Plain ES5, no libraries. Without it the page still shows every card, top list and check section.
 SCRIPT = """<script>
 (function(){var D=document;D.documentElement.className+=' js';
 var day=D.body.getAttribute('data-day'),prev=null;
 try{var v=JSON.parse(localStorage.getItem('bfp.visit')||'{}');if(!v.cur)v.cur=day;
 else if(v.cur!==day){v.prev=v.cur;v.cur=day;}prev=v.prev||null;localStorage.setItem('bfp.visit',JSON.stringify(v));}catch(e){}
-var all=[].slice.call(D.querySelectorAll('.card'));
+var list=D.getElementById('funn'),all=list?[].slice.call(list.querySelectorAll('.card')):[];
 all.forEach(function(c,i){c._i=i;
 if(prev&&!/\\bnew\\b/.test(c.className)&&c.getAttribute('data-first')>prev){c.className+=' seen';
 c.querySelector('.tag.seen').hidden=false;}
-var b=c.querySelector('.gbtn');b.onclick=function(){var o=c.classList.toggle('g');
-b.setAttribute('aria-expanded',o);b.textContent=o?'Skjul graf':'Vis graf';};});
-var tabs=[].slice.call(D.querySelectorAll('.chips .chip')),secs=[].slice.call(D.querySelectorAll('.sec[data-rule]'));
-function show(r){secs.forEach(function(s){s.hidden=s.getAttribute('data-rule')!==r;});
-tabs.forEach(function(t){t.setAttribute('aria-selected',t.getAttribute('data-open')===r);});}
-tabs.forEach(function(t){t.onclick=function(ev){ev.preventDefault();var r=t.getAttribute('data-open');show(r);
-try{history.replaceState(null,'','#t-'+r);}catch(e){}};});
-if(tabs.length){var h=location.hash.replace('#t-','');
-show(tabs.some(function(t){return t.getAttribute('data-open')===h;})?h:tabs[0].getAttribute('data-open'));}
-var c=D.getElementById('fcat');if(!c)return;
-var s=D.getElementById('fshop'),q=D.getElementById('fq'),lv=D.getElementById('flvl'),so=D.getElementById('fsort'),
-nw=D.getElementById('fnew'),fn=D.getElementById('fn'),box=D.querySelector('.fbox'),SHOW=10;
-if(box&&window.matchMedia&&matchMedia('(max-width:640px)').matches)box.open=false;
-function key(x){return so.value==='new'?x.getAttribute('data-first'):so.value==='kr'?+x.getAttribute('data-amount'):-x._i;}
-function run(){var act=[c.value,s.value,q.value,lv.value,nw.checked?'1':''].filter(Boolean).length;
-fn.textContent=act?'('+act+' aktive)':'';
-secs.forEach(function(sec){var list=sec.querySelector('.list');if(!list)return;
-var cs=[].slice.call(list.querySelectorAll('.card')),i=0,more=sec.classList.contains('all');
-cs.sort(function(a,b){var x=key(a),y=key(b);return x<y?1:x>y?-1:a._i-b._i;});
-cs.forEach(function(r){list.appendChild(r);
-var ok=(!c.value||r.getAttribute('data-cat')===c.value)&&(!s.value||r.getAttribute('data-shop')===s.value)&&
-(!q.value||r.getAttribute('data-q').indexOf(q.value.toLowerCase())>=0)&&
-(!lv.value||+r.getAttribute('data-level')>=+lv.value)&&(!nw.checked||/\\b(new|seen)\\b/.test(r.className));
-r.hidden=!ok||(!more&&i>=SHOW);if(ok)i++;});
-sec.querySelector('.n').textContent=i;
-var tb=D.querySelector('.chip[data-open="'+sec.getAttribute('data-rule')+'"] b');if(tb)tb.textContent=i;
-var m=sec.querySelector('.more');if(m){m.hidden=more||i<=SHOW;m.textContent='Vis alle '+i;}});}
-[c,s,lv,so,nw].forEach(function(x){x.onchange=run;});q.oninput=run;
-D.getElementById('freset').onclick=function(){c.value=s.value=q.value=lv.value=so.value='';nw.checked=false;run();};
-[].forEach.call(D.querySelectorAll('.more'),function(b){b.onclick=function(){b.closest('.sec').classList.add('all');run();};});
+[].forEach.call(c.querySelectorAll('tr.hit'),function(r){r.onclick=r.onkeydown=function(ev){
+if(ev.type==='keydown'&&ev.keyCode!==13)return;var k=r.getAttribute('data-i');
+[].forEach.call(c.querySelectorAll('.ev'),function(x){x.hidden=x.getAttribute('data-i')!==k;});
+[].forEach.call(c.querySelectorAll('tr.hit'),function(x){x.className=x===r?'hit on':'hit';});};});});
+if(!all.length)return;
+var q=D.getElementById('fq'),c=D.getElementById('fcat'),ty=D.getElementById('ftype'),lv=D.getElementById('flvl'),
+so=D.getElementById('fsort'),s=D.getElementById('fshop'),nw=D.getElementById('fnew'),fn=D.getElementById('fn'),
+more=D.getElementById('more'),cats=[].slice.call(D.querySelectorAll('.cat')),SHOW=20,n=SHOW,
+segs=[].slice.call(D.querySelectorAll('.vis button')),fa=D.getElementById('fact');
+var BAD=[' fake_discount ',' before_price ',' hike '];
+function hasType(r){var t=ty.value,rs=r.getAttribute('data-rules');if(!t)return true;
+if(t==='bad')return BAD.some(function(b){return rs.indexOf(b)>=0;});return rs.indexOf(' '+t+' ')>=0;}
+function pass(r,skipCat){return (skipCat||!c.value||r.getAttribute('data-cat')===c.value)&&
+(!s.value||r.getAttribute('data-shops').indexOf('|'+s.value+'|')>=0)&&
+(!q.value||r.getAttribute('data-q').indexOf(q.value.toLowerCase())>=0)&&hasType(r)&&
+(!lv.value||+r.getAttribute('data-level')>=+lv.value)&&(!nw.checked||/\\b(new|seen)\\b/.test(r.className));}
+function key(x){var v=so.value;return v==='new'?x.getAttribute('data-first'):v==='kr'?+x.getAttribute('data-amount'):
+v==='pop'?+x.getAttribute('data-pop'):v==='cat'?'':-x._i;}
+function cmp(a,b){if(so.value==='cat'){var x=a.getAttribute('data-cat'),y=b.getAttribute('data-cat');
+if(x!==y)return x<y?-1:1;return a._i-b._i;}var p=key(a),r=key(b);return p<r?1:p>r?-1:a._i-b._i;}
+function top(id,attr,line,fig){var ol=D.getElementById(id);if(!ol)return;
+var cs=all.filter(function(r){return pass(r)&&+r.getAttribute(attr)>0;});
+cs.sort(function(a,b){return b.getAttribute(attr)-a.getAttribute(attr);});ol.innerHTML='';
+cs.slice(0,5).forEach(function(r){var li=D.createElement('li'),a=D.createElement('a'),t=D.createElement('span'),
+f=D.createElement('b'),sm=D.createElement('small');a.href='#'+r.id;t.className='tt';t.textContent=r.getAttribute('data-title');
+f.className='fig';f.textContent=r.getAttribute(fig);sm.textContent=r.getAttribute(line);a.appendChild(t);a.appendChild(f);
+li.appendChild(a);li.appendChild(sm);ol.appendChild(li);});
+if(!cs.length)ol.innerHTML="<li class='none'>Ingen med dette utvalget.</li>";}
+function run(){var cs=all.slice().sort(cmp),i=0,per={},tot=0;
+cs.forEach(function(r){list.appendChild(r);var ok=pass(r);r.hidden=!ok||i>=n;if(ok)i++;
+if(pass(r,true)){var k=r.getAttribute('data-cat');per[k]=(per[k]||0)+1;tot++;}});
+cats.forEach(function(b){var k=b.getAttribute('data-cat');b.setAttribute('aria-pressed',k===c.value);
+var m=k?(per[k]||0):tot;b.querySelector('b').textContent=m;b.className=m||k===c.value?'cat':'cat zero';if(k===c.value&&k)b.parentNode.scrollLeft=b.offsetLeft-b.parentNode.offsetLeft-40;});
+fn.textContent=i>n?n+' av '+i:i+' produkter';
+more.hidden=i<=n;more.textContent='Vis alle '+i;
+top('toptrick','data-trick','data-tl','data-tf');top('topbuy','data-buy','data-bl','data-bf');
+segs.forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-type')===ty.value);});
+var act=[lv.value,s.value,nw.checked?'1':'',(ty.value&&ty.value!=='bad'&&ty.value!=='deal')?'1':''].filter(Boolean).length;fa.textContent=act?'('+act+')':'';
+try{history.replaceState(null,'',c.value?'#k='+c.value:location.pathname);}catch(e){}}
+function reset(){n=SHOW;run();}
+cats.forEach(function(b){b.onclick=function(){c.value=b.getAttribute('data-cat');reset();};});
+segs.forEach(function(b){b.onclick=function(){ty.value=b.getAttribute('data-type');reset();};});
+[ty,lv,so,s,nw].forEach(function(x){x.onchange=reset;});q.oninput=reset;
+more.onclick=function(){n=1e9;run();};
+D.getElementById('freset').onclick=function(){c.value=s.value=q.value=lv.value=so.value=ty.value='';nw.checked=false;reset();};
 [].forEach.call(D.querySelectorAll('button.link[data-shop]'),function(b){b.onclick=function(){
-s.value=b.getAttribute('data-shop');run();D.getElementById('funn').scrollIntoView();};});
+s.value=b.getAttribute('data-shop');reset();list.scrollIntoView();};});
+D.addEventListener('click',function(ev){var a=ev.target.closest&&ev.target.closest('.tops a');if(!a)return;
+var card=D.getElementById(a.getAttribute('href').slice(1));if(!card)return;ev.preventDefault();
+card.hidden=false;var d=card.querySelector('details');if(d)d.open=true;card.scrollIntoView();});
+function fromHash(){var h=location.hash.match(/^#k=([\\w-]*)/);if(h)c.value=h[1];}
+window.onhashchange=function(){if(/^#k=/.test(location.hash)){fromHash();reset();}};fromHash();
 run();})();
 </script>"""
 
@@ -665,31 +878,24 @@ def _howto(ph):
     return "\n".join(lines)
 
 
-def html_page(findings, stats, files, running, shops=(), top=50, today=None, data_day=None, flags=None):
-    """The dashboard. flags = store.flag_info(day): marks new findings and lists the ones that went away."""
+def html_page(findings, stats, files, running, shops=(), top=300, today=None, data_day=None, flags=None,
+              pop=None, prices=None, collected=None):
+    """The dashboard: search and categories, top 5 lists, then one card per product.
+
+    flags = store.flag_info(day): marks new findings and lists the ones that went away.
+    pop = store.popularity(day), prices = store.shop_prices(day, ...), collected = {source: "YYYY-MM-DD HH:MM"}.
+    """
     e = html.escape
     shops = list(shops)
     today = today or stats.get("last_day") or net.today_oslo()
     day = data_day or today
     ph = analyze.bf_phase(today)
-    new_by_rule = {}
-    for f in findings:
-        if is_new(f, flags, day):
-            new_by_rule[f.rule] = new_by_rule.get(f.rule, 0) + 1
-    secs = []
-    for t in sections(ph["phase"]):
-        rows = [f for f in findings if f.rule == t.rule][:top]
-        if not rows:
-            secs.append("<section class='sec {tone}' id='t-{r}' data-rule='{r}'><p class='none'><span class='dot {tone}'>"
-                        "</span><b>{name}:</b> ingen funnet.</p></section>".format(tone=t.tone, r=t.rule, name=e(t.name)))
-            continue
-        cards = "".join(_card(f, ph["bf"], first_day(f, flags, day) if (flags or {}).get("since") else None,
-                              is_new(f, flags, day)) for f in rows)
-        secs.append("<section class='sec {tone}' id='t-{r}' data-rule='{r}'><h2>{name} <span class='n'>{n}</span></h2>"
-                    "<p class='why'>{why} <small>Kriterium: {how} {lvl}</small></p><div class='list'>{cards}</div>"
-                    "<button type='button' class='more'>Vis alle {n}</button></section>".format(
-                        tone=t.tone, r=t.rule, name=e(t.name), n=len(rows), why=e(t.means),
-                        how=e(_nb(t.measured)), lvl=e(_nb(level_text(t))), cards=cards))
+    groups = analyze.rank_products(analyze.group_findings(findings)[:top], pop or {}, prices,
+                                   strong=lambda f: level(f) >= 2)
+    cards = "".join(_card(g, ph["bf"], flags, day, prices, (collected or {}).get(g["source"])) for g in groups)
+    body = ("<section class='sec prods'><h2>Produkter <span id='fn'>{n} produkter</span></h2>{filters}"
+            "<div id='funn' class='list'>{cards}</div><button type='button' id='more' hidden>Vis alle</button>"
+            "</section>").format(n=len(groups), filters=_filters(findings), cards=cards) if groups else ""
     file_links = "".join("<li><a href='files/{0}'>{0}</a></li>".format(e(n)) for n in files)
     return """<!doctype html><html lang="nb"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Black Friday-prisvakt</title>
@@ -718,36 +924,56 @@ font-size:11px;color:var(--muted);margin:2px 0 0}}.tlx span{{position:absolute;t
 .verdict .link{{color:inherit;font-weight:600}}.worst{{font-size:14px;margin-top:2px}}
 .news{{margin-top:6px;padding-top:6px;border-top:1px solid currentColor;font-size:15px}}.news ul{{margin:4px 0;padding-left:18px}}
 .news .why{{color:inherit;opacity:.85;font-size:14px}}
-.chips{{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}}.chip{{display:inline-flex;gap:5px;align-items:baseline;
-padding:5px 11px;border-radius:16px;text-decoration:none;font-size:15px;border:2px solid transparent}}
-.chip b{{font-size:16px}}.chip.bad{{background:var(--bad);color:var(--badfg)}}.chip.warn{{background:var(--warn);
-color:var(--warnfg)}}.chip.good{{background:var(--ok);color:var(--okfg)}}.chip.zero{{background:none;
-border-color:var(--rule);color:var(--muted)}}.chip:hover,.chip[aria-selected=true]{{border-color:currentColor}}
-.nw{{font-size:12px;font-weight:600;padding:0 6px;border-radius:8px;background:var(--newbg);color:var(--new)}}
-.fbox{{margin:8px 0 12px;border:1px solid var(--rule);border-radius:8px;padding:8px 10px}}.fbox summary{{font-weight:600}}
-.filters{{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:end;margin-top:8px}}
-.filters label{{display:flex;flex-direction:column;font-size:13px;color:var(--muted)}}.filters .chk{{flex-direction:row;
-gap:6px;align-items:center;color:var(--fg);font-size:15px;padding-bottom:6px}}
 select,input,button{{font:inherit;padding:5px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--bg);
 color:var(--fg)}}input[type=checkbox]{{width:18px;height:18px;padding:0}}button{{cursor:pointer}}
 button.link{{border:0;padding:0;background:none;color:var(--link);text-decoration:underline}}
 .sec{{margin:8px 0 16px}}.why{{font-size:14px;margin-bottom:8px}}.why small{{display:block}}summary{{cursor:pointer}}
 .n{{display:inline-block;min-width:24px;text-align:center;padding:0 7px;border-radius:10px;background:var(--card);
 font-size:15px}}.none{{color:var(--muted);margin:6px 0}}
-.card{{display:grid;grid-template-columns:1fr auto 300px;gap:4px 14px;align-items:start;background:var(--card);
-border-radius:8px;padding:10px 12px;margin:8px 0;border-left:4px solid var(--rule)}}
-.card p{{margin:2px 0}}.hd{{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}}
-.t{{font-weight:600;color:var(--fg);text-decoration:none}}.t:hover{{text-decoration:underline}}
-.shop{{font-size:14px;color:var(--muted)}}.pr{{font-size:15px}}.st{{font-size:14px;color:var(--muted)}}.card small{{font-size:12px}}
-.tag{{font-size:11px;font-weight:700;letter-spacing:.03em;padding:1px 6px;border-radius:6px;background:var(--new);color:var(--bg)}}
-.tag.seen{{background:var(--newbg);color:var(--new)}}.card.new,.card.seen{{box-shadow:inset 0 0 0 1px var(--new)}}
-.badge{{text-align:right;white-space:nowrap;color:var(--badfg)}}.badge b{{display:block;font-size:20px;line-height:1.1}}
-.badge .cap{{display:block;font-size:12px;color:var(--muted)}}.hike .badge{{color:var(--warnfg)}}.deal .badge{{color:var(--okfg)}}
-.lvl{{display:inline-flex;gap:2px;align-items:center;font-size:12px;font-weight:600;margin-top:4px}}
-.lvl i{{display:inline-block;width:7px;height:12px;border-radius:2px;background:var(--rule)}}.lvl i:last-of-type{{margin-right:4px}}
-.l1 i:nth-child(1),.l2 i:nth-child(-n+2),.l3 i{{background:currentColor}}
-.sec.bad .card{{border-left-color:var(--badfg)}}.sec.warn .card{{border-left-color:var(--warnfg)}}
-.sec.good .card{{border-left-color:var(--okfg)}}.gbtn{{display:none;justify-self:start;font-size:14px;padding:3px 10px}}
+[hidden]{{display:none!important}}
+.finder{{position:sticky;top:0;z-index:2;background:var(--bg);padding:8px 0 4px;margin:4px 0 0;box-shadow:0 8px 8px -8px rgba(0,0,0,.15)}}#fq{{width:100%;font-size:16px;padding:9px 12px;border-radius:8px}}
+.cats{{display:flex;gap:6px;overflow-x:auto;padding:8px 0 4px;scrollbar-width:none}}.cats::-webkit-scrollbar{{display:none}}
+.cat{{flex:0 0 auto;border-radius:16px;padding:3px 11px;font-size:14px;background:var(--card);border-color:transparent}}
+.cat b{{font-weight:500;color:var(--muted);margin-left:3px}}.cat[aria-pressed=true]{{background:var(--fg);color:var(--bg)}}
+.cat[aria-pressed=true] b{{color:var(--bg)}}.cat.zero{{opacity:.45}}
+.tops{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin:14px 0 6px}}.tops>.why{{grid-column:1/-1;font-size:13px;margin:0}}
+.tops>.why p{{margin-top:4px}}.top{{min-width:0;border:1px solid var(--rule);border-radius:10px;padding:10px 12px 6px}}
+.top h2{{font-size:15px;margin:0 0 4px;display:flex;align-items:center;gap:6px}}.top h2:before{{content:'';width:8px;height:8px;border-radius:50%;background:var(--muted)}}.top.bad h2:before{{background:var(--badfg)}}.top.good h2:before{{background:var(--okfg)}}
+.top ol{{margin:0;padding:0;list-style:none;counter-reset:r}}.top li{{counter-increment:r;position:relative;padding:6px 0 6px 26px;border-top:1px solid var(--rule)}}.top li:first-child{{border-top:0}}
+.top li:before{{content:counter(r);position:absolute;left:0;top:7px;width:18px;height:18px;border-radius:50%;background:var(--card);font-size:12px;font-weight:600;text-align:center;line-height:18px;color:var(--muted)}}
+.top li a{{display:flex;gap:8px;align-items:baseline;color:var(--fg);text-decoration:none}}.top li a:hover .tt{{text-decoration:underline}}
+.tt{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:15px}}
+.fig{{white-space:nowrap;font-size:15px}}.top.bad .fig{{color:var(--badfg)}}.top.good .fig{{color:var(--okfg)}}
+.top li small{{display:block;color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.top .none{{padding-left:0;color:var(--muted)}}.top .none:before{{display:none}}
+.prods{{scroll-margin-top:120px}}.prods h2{{display:flex;align-items:baseline;gap:8px;margin:18px 0 8px}}#fn{{font-size:14px;font-weight:400;color:var(--muted)}}
+.bar{{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 6px}}.vis{{display:inline-flex;border:1px solid var(--rule);border-radius:8px;overflow:hidden}}.vis button{{border:0;border-radius:0;padding:5px 12px;font-size:14px;background:var(--bg)}}
+.vis button+button{{border-left:1px solid var(--rule)}}.vis button[aria-pressed=true]{{background:var(--fg);color:var(--bg)}}
+.inl{{font-size:14px;color:var(--muted);display:flex;gap:6px;align-items:center}}.inl select{{font-size:14px}}
+.moref{{font-size:14px}}.moref>summary{{color:var(--link)}}.moref[open]{{flex-basis:100%}}
+.filters{{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:end;margin-top:8px;padding:10px;border-radius:8px;background:var(--card)}}
+.filters label{{display:flex;flex-direction:column;font-size:13px;color:var(--muted)}}.filters .box{{flex-direction:row;gap:6px;align-items:center;color:var(--fg);font-size:14px;padding-bottom:6px}}
+.card{{scroll-margin-top:120px;background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--rule);border-radius:10px;padding:10px 14px 8px;margin:8px 0}}
+.card.bad{{border-left-color:var(--badfg)}}.card.warn{{border-left-color:var(--warnfg)}}.card.good{{border-left-color:var(--okfg)}}
+.card.new,.card.seen{{box-shadow:0 0 0 1px var(--new)}}.card p{{margin:3px 0}}
+.head{{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}}.hd{{flex:1;min-width:0}}
+.t{{font-weight:600;font-size:16px;color:var(--fg);text-decoration:none}}.t:hover{{text-decoration:underline}}
+.tag{{font-size:11px;font-weight:700;letter-spacing:.03em;padding:1px 6px;border-radius:6px;background:var(--new);color:var(--bg);margin-right:6px;vertical-align:2px}}.tag.seen{{background:var(--newbg);color:var(--new)}}
+.badge{{text-align:right;white-space:nowrap;color:var(--badfg);margin:0!important}}.badge b{{display:block;font-size:20px;line-height:1.15}}
+.badge .cap{{display:block;font-size:12px;color:var(--muted)}}.card.warn .badge{{color:var(--warnfg)}}.card.good .badge{{color:var(--okfg)}}
+.labs{{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}}.lab{{font-size:12px;font-weight:600;padding:1px 8px;border-radius:10px}}
+.lab.bad{{background:var(--bad);color:var(--badfg)}}.lab.warn{{background:var(--warn);color:var(--warnfg)}}.lab.good{{background:var(--ok);color:var(--okfg)}}.lab small{{font-weight:400}}
+.lvl{{display:inline-flex;gap:2px;align-items:center;font-size:12px;color:var(--muted);margin-left:2px}}.lvl i{{display:inline-block;width:6px;height:11px;border-radius:2px;background:var(--rule)}}.lvl i:last-of-type{{margin-right:4px}}
+.card.bad .lvl{{color:var(--badfg)}}.card.warn .lvl{{color:var(--warnfg)}}.card.good .lvl{{color:var(--okfg)}}.l1 i:nth-child(1),.l2 i:nth-child(-n+2),.l3 i{{background:currentColor}}
+.pr{{font-size:15px}}.st{{font-size:14px;color:var(--muted)}}
+.chk{{margin-top:4px;border-top:1px solid var(--rule);padding-top:6px}}.chk>summary{{display:flex;gap:8px;align-items:baseline;list-style:none;font-size:13px}}.chk>summary::-webkit-details-marker{{display:none}}
+.chk .meta{{flex:1;color:var(--muted)}}.chk .open{{color:var(--link);font-weight:600;white-space:nowrap}}.chk .open:after{{content:' ▾'}}.chk[open] .open:after{{content:' ▴'}}
+.hint{{font-size:13px;color:var(--muted);margin:8px 0 2px!important}}.tw{{overflow-x:auto}}.shops{{font-size:14px;margin:4px 0 8px}}.shops td,.shops th{{padding:4px 6px}}
+.shops tr.quiet{{color:var(--muted)}}.shops tr.hit{{cursor:pointer}}.shops tr.hit:hover,.shops tr.on{{background:var(--band)}}
+.ev{{display:grid;grid-template-columns:1fr 300px;gap:6px 14px;align-items:start}}.basis,.steps{{font-size:14px}}
+.steps{{grid-column:1/-1;color:var(--muted)}}.src{{font-size:13px;color:var(--muted);margin-top:6px}}
+.ch .mk{{fill:none;stroke:var(--ref);stroke-width:1.5;stroke-dasharray:1 3}}
+#more{{display:block;width:100%;margin:10px 0;padding:9px}}
 .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}}.dot.bad{{background:var(--badfg)}}
 .dot.warn{{background:var(--warnfg)}}.dot.good{{background:var(--okfg)}}.more{{margin:4px 0}}
 .how{{margin:16px 0}}.how ul{{margin:6px 0;padding-left:20px}}.how li{{margin:4px 0}}.how small{{display:block}}
@@ -764,19 +990,17 @@ details.sec>summary h2{{display:inline}}
 .ch{{width:100%;max-width:300px;height:auto;display:block}}.key{{font-size:14px;color:var(--muted)}}
 .key span{{margin-right:12px;white-space:nowrap}}footer{{margin-top:24px;border-top:1px solid var(--rule);
 padding-top:10px;font-size:15px}}footer p{{margin:6px 0}}
-@media (max-width:640px){{body{{padding:10px 12px 20px}}.card{{grid-template-columns:1fr auto}}.chart{{grid-column:1/-1}}
-.ch{{max-width:480px}}table{{font-size:14px}}.js .gbtn{{display:inline-block;grid-column:1/-1}}
-.js .card .chart{{display:none}}.js .card.g .chart{{display:block}}.filters label{{flex:1 1 40%}}}}</style>
+@media (max-width:640px){{body{{padding:10px 12px 20px}}.fnm{{display:none}}.shops td,.shops th{{padding:4px 3px}}.tops{{grid-template-columns:1fr}}.ev{{grid-template-columns:1fr}}.ch{{max-width:480px}}table{{font-size:14px}}.badge .cap{{display:none}}.badge b{{font-size:18px}}.filters label{{flex:1 1 40%}}.inl{{margin-left:auto}}}}</style>
 </head><body data-day="{day}">
 <header class="hdr"><h1>Black Friday-prisvakt</h1><p class="pill"><b>Black Friday {bfday}</b> · {countdown}</p></header>
 <p class="sub">{products} produkter fulgt · priser fra {first} til {last}{status}</p>
-{timeline}{verdict}{overview}{filters}<div id="funn">{body}</div>{shops}
+{timeline}{verdict}{finder}{tops}{body}{shops}
 <details class="how"><summary>Slik leser du siden</summary><ul>
 {howto}
 <li>Rapporten viser bare prisdata. Sjekk alltid selv før du konkluderer.</li></ul>
 <p class="key"><span style="color:var(--line)">━ pris</span><span style="color:var(--ref)">┅ normalpris</span>
 <span>▒ dagene normalprisen er målt</span><span style="color:var(--claim)">┅ oppgitt før-pris</span>
-<span style="color:var(--peak)">● høyeste</span><span style="color:var(--now)">● nå</span>
+<span style="color:var(--ref)">┈ snitt alle butikker</span><span style="color:var(--peak)">● høyeste</span><span style="color:var(--now)">● nå</span>
 <span style="color:var(--claim)">┆ Black Friday</span></p></details>
 <footer><p>{auto} Sist oppdatert: {last}.</p>
 <form method="post" action="run"><button {disabled}>{btn}</button></form>
@@ -790,7 +1014,7 @@ padding-top:10px;font-size:15px}}footer p{{margin:6px 0}}
             " · <b>funnene gjelder prisene fra {}</b>, dagens priser hentes i løpet av morgenen".format(
                 e(nice_day(data_day))) if data_day and data_day != today else ""),
         verdict=_summary(findings, shops, ph, _news(findings, flags, day)),
-        overview=_overview(findings, ph, new_by_rule), timeline=_timeline(ph, today), howto=_howto(ph),
-        filters=_filters(findings), shops=_shops_table(shops), body="".join(secs),
+        finder=_finder(groups), tops=_tops(groups), timeline=_timeline(ph, today), howto=_howto(ph),
+        shops=_shops_table(shops), body=body,
         disabled="disabled" if running else "", btn="Henter …" if running else "Hent priser nå",
         files=file_links, script=SCRIPT)

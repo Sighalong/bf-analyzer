@@ -630,3 +630,58 @@ class LowestSeries(unittest.TestCase):
         found = [(f.shop, f.rule) for f in analyze.analyze(s, today)]
         self.assertIn(("S", "hike"), found)
         self.assertNotIn(("(laveste)", "hike"), found)
+
+
+def ranked(rule="deal", score=0.3, now=700.0, shop="A", pid="1", days=40):
+    return analyze.Finding(rule=rule, source="prisjakt", product_id=pid, title="T" + pid, url="u", category="tv",
+                           shop=shop, score=score, now=now, days=days, base_low=1000.0)
+
+
+class TopLists(unittest.TestCase):
+    POP = {("prisjakt", "1"): (20, None), ("prisjakt", "2"): (1, None)}
+
+    def rank(self, fs, prices=None, pop=None):
+        return {g["product_id"]: g for g in analyze.rank_products(analyze.group_findings(fs), pop or self.POP, prices)}
+
+    def test_groups_one_entry_per_product_in_order(self):
+        gs = analyze.group_findings([ranked(pid="2"), ranked(pid="1"), ranked(pid="2", shop="B")])
+        self.assertEqual([(g["product_id"], len(g["findings"])) for g in gs], [("2", 2), ("1", 1)])
+
+    def test_popular_beats_unpopular_with_the_same_discount(self):
+        g = self.rank([ranked(pid="1"), ranked(pid="2")])
+        self.assertGreater(g["1"]["buy"], g["2"]["buy"])
+        self.assertGreater(g["1"]["pop"], g["2"]["pop"])
+
+    def test_fake_discount_beats_hike_of_the_same_size(self):
+        g = self.rank([ranked("fake_discount", pid="1"), ranked("hike", pid="2")],
+                      pop={("prisjakt", "1"): (5, None), ("prisjakt", "2"): (5, None)})
+        self.assertGreater(g["1"]["trick"], g["2"]["trick"])
+
+    def test_more_shops_doing_it_ranks_higher_and_extreme_jumps_lower(self):
+        one = self.rank([ranked("hike", pid="1")])["1"]["trick"]
+        three = self.rank([ranked("hike", pid="1", shop=s) for s in "ABC"])["1"]["trick"]
+        self.assertGreater(three, one)
+        self.assertGreater(self.rank([ranked("hike", score=0.9)])["1"]["trick"],
+                           self.rank([ranked("hike", score=1.4)])["1"]["trick"])
+
+    def test_best_buy_needs_cheapest_in_stock_shop_and_enough_discount(self):
+        cheaper = {("prisjakt", "1"): [("B", 650.0, None, 1), ("A", 700.0, None, 1)]}
+        sold_out = {("prisjakt", "1"): [("B", 650.0, None, 0), ("Telia", 1.0, None, 1), ("A", 700.0, None, 1)]}
+        self.assertEqual(self.rank([ranked()], cheaper)["1"]["buy"], 0)
+        self.assertGreater(self.rank([ranked()], sold_out)["1"]["buy"], 0)      # sold out / plan price ignored
+        self.assertEqual(self.rank([ranked(score=0.05)])["1"]["buy"], 0)
+        self.assertEqual(self.rank([ranked(shop="(laveste)")])["1"]["buy"], 0)
+
+    def test_best_buy_weighed_down_by_short_history_or_a_trick_elsewhere(self):
+        full = self.rank([ranked()])["1"]["buy"]
+        self.assertAlmostEqual(self.rank([ranked(days=15)])["1"]["buy"], full / 2)
+        self.assertAlmostEqual(self.rank([ranked(), ranked("hike", shop="B")])["1"]["buy"], full / 2)
+
+    def test_top_skips_non_candidates(self):
+        gs = analyze.rank_products(analyze.group_findings([ranked(pid="1"), ranked("hike", pid="2")]), self.POP)
+        self.assertEqual([g["product_id"] for g in analyze.top(gs, "buy")], ["1"])
+        self.assertEqual([g["product_id"] for g in analyze.top(gs, "trick")], ["2"])
+
+    def test_findings_carry_the_market_line(self):
+        self.assertIn("market", analyze.Finding.__slots__)
+        self.assertNotIn("market", ranked().as_dict())

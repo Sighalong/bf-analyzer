@@ -28,6 +28,7 @@ shop sells out or drops off the listing, so hike / fake_discount there need more
 per-shop market median must have risen >= HIKE too (once it covers the baseline), and without
 that data the peak may be at most LOWEST_MAX_JUMP x the baseline median.
 """
+import math
 from datetime import datetime, timedelta
 
 HIKE = 0.10
@@ -59,14 +60,14 @@ LOWEST_MAX_JUMP = 1.6       # cheapest-price series: a bigger jump is a shop dro
 class Finding(object):
     __slots__ = ("rule", "source", "product_id", "title", "url", "category", "shop",
                  "base_median", "base_low", "peak", "peak_day", "now", "claimed",
-                 "low30", "days", "score", "baseline", "series")
+                 "low30", "days", "score", "baseline", "series", "market")
 
     def __init__(self, **kw):
         for k in self.__slots__:
             setattr(self, k, kw.get(k))
 
     def as_dict(self):
-        return {k: getattr(self, k) for k in self.__slots__ if k != "series"}
+        return {k: getattr(self, k) for k in self.__slots__ if k not in ("series", "market")}
 
 
 def _quantile(xs, q):
@@ -294,8 +295,9 @@ def analyze(store, today, baseline_end="auto"):
             lowest = shop.startswith("(")
             for rule, f in analyze_series(rows, today, None if lowest else mk, be,
                                           lowest=lowest, confirm=mk if lowest else None):
+                market = [(d, mk[d]) for d, _ in f["series"] if d in mk]   # for the chart's market line
                 findings.append(Finding(rule=rule, source=source, product_id=pid, title=title, url=url,
-                                        category=category, shop=shop, **f))
+                                        category=category, shop=shop, market=market, **f))
     findings.sort(key=lambda f: -f.score)
     return findings
 
@@ -325,3 +327,83 @@ def rank_shops(findings, listed):
     # weigh the share by evidence so 1 of 1 doesn't beat 8 of 20
     out.sort(key=lambda r: (-(r["flagged"] * r["share"]), -r["flagged"], r["shop"]))
     return out
+
+
+# ---- one entry per product, and the top lists ------------------------------
+
+TRICK_WEIGHT = {"fake_discount": 1.0, "before_price": 0.9, "hike": 0.7}
+BUY_MIN = 0.10          # a best buy is at least this far below the usual low price
+BUY_FULL_DAYS = 30      # history needed for full confidence in a best buy
+
+
+def group_findings(findings):
+    """One group per product (source, product_id), worst finding first, groups in findings order.
+
+    {"source", "product_id", "title", "url", "category", "findings": [Finding]}.
+    """
+    groups, order = {}, []
+    for f in findings:
+        k = (f.source, f.product_id)
+        if k not in groups:
+            groups[k] = {"source": f.source, "product_id": f.product_id, "title": f.title, "url": f.url,
+                         "category": f.category, "findings": []}
+            order.append(k)
+        groups[k]["findings"].append(f)
+    return [groups[k] for k in order]
+
+
+def popularity_score(pop, source, product_id):
+    """0..1 from Store.popularity: shops selling it (log, against the most-listed product of the source)
+    and, when known, its place in the site's category listing."""
+    n, rank = pop.get((source, product_id), (0, None))
+    top = max([v[0] for k, v in pop.items() if k[0] == source] or [1])
+    shops = math.log(1 + n) / math.log(1 + max(top, 1))
+    return shops if rank is None else 0.6 * shops + 0.4 * rank
+
+
+def _size(score):
+    """Ranking weight of a deviation: grows to 100 %, then falls again (bigger jumps are more often a
+    data error, such as a wrong model on the shop's listing, than a real trick). Never below 0.5."""
+    s = score or 0
+    return s if s <= 1 else max(0.5, 2 - s)
+
+
+def rank_products(groups, pop, prices=None, strong=None):
+    """Adds "pop", "trick" and "buy" (0 = not a candidate) and "trick_f"/"buy_f" (the finding behind it)
+    to each group.
+
+    pop: Store.popularity(day). prices: Store.shop_prices(day, keys), to check a best buy is the cheapest.
+    strong(f): True when a finding is at least "Tydelig" (report.level >= 2); default all.
+    trick = type weight x _size(score) x (0.5 + 0.5 pop) x spread (+10 % per extra shop, max 1.5).
+    buy = below the usual low x (0.5 + 0.5 pop) x confidence (days of history / 30, halved when another
+    shop on the same product has a trick finding).
+    """
+    strong = strong or (lambda f: True)
+    for g in groups:
+        p = popularity_score(pop or {}, g["source"], g["product_id"])
+        g["pop"], g["trick"], g["buy"], g["trick_f"], g["buy_f"] = p, 0.0, 0.0, None, None
+        bad = [f for f in g["findings"] if f.rule in TRICK_WEIGHT]
+        tricks = [f for f in bad if strong(f)]
+        if tricks:
+            f = max(tricks, key=lambda x: TRICK_WEIGHT[x.rule] * _size(x.score))
+            shops = len({x.shop for x in bad})
+            spread = min(1.5, 1 + 0.1 * (shops - 1))
+            g["trick"] = TRICK_WEIGHT[f.rule] * _size(f.score) * (0.5 + 0.5 * p) * spread
+            g["trick_f"] = f
+        deals = [f for f in g["findings"] if f.rule == "deal" and not f.shop.startswith("(")
+                 and (f.score or 0) >= BUY_MIN]
+        if deals:
+            f = min(deals, key=lambda x: (x.now, -(x.score or 0)))
+            offers = [o for o in (prices or {}).get((g["source"], g["product_id"]), []) if o[3] and not plan_shop(o[0])]
+            if offers and min(o[1] for o in offers) < f.now - 0.5:
+                continue        # another shop is cheaper today: not the best buy for this product
+            conf = min(1.0, (f.days or 0) / float(BUY_FULL_DAYS))
+            if bad:
+                conf *= 0.5
+            g["buy"] = (f.score or 0) * (0.5 + 0.5 * p) * conf
+            g["buy_f"] = f
+    return groups
+
+
+def top(groups, key, n=5):
+    return sorted([g for g in groups if g[key] > 0], key=lambda g: -g[key])[:n]

@@ -64,6 +64,7 @@ def collect(store, sources, categories, per_category, max_products, today, produ
     total = 0
     for name in sources:
         mod = SOURCES[name]
+        start = total
         queue = {}  # product_id -> (url, category)
         for pid, url, cat in store.tracked(name, today=today):
             queue[pid] = (url, cat)
@@ -85,9 +86,12 @@ def collect(store, sources, categories, per_category, max_products, today, produ
             except Exception as e:
                 log("[warn] {} {}: discovery failed: {}".format(name, cat, e))
                 continue
+            ids = []
             for item in found:
                 pid, url = (item, prisjakt.product_url(item)) if name == "prisjakt" else item
                 queue.setdefault(pid, (url, cat))
+                ids.append(pid)
+            store.save_ranks(name, cat, ids, today)   # listing order = the site's popularity order
             log("[+] {} {}: {} produkter".format(name, cat, len(found)))
 
         items = list(queue.items())[:max_products]
@@ -106,6 +110,8 @@ def collect(store, sources, categories, per_category, max_products, today, produ
                 break
             except Exception as e:
                 log("[warn] {}: {}".format(url, e))
+        if total > start:
+            store.set_meta("collected_" + name, net.now_oslo())
     return total
 
 
@@ -117,7 +123,10 @@ def write_reports(store, today, out_prefix, top, min_price=0, baseline_end="auto
     findings = [f for f in findings if (f.now or 0) >= min_price]
     shops = analyze.rank_shops(findings, store.shop_product_counts(day))
     report.save_csv(out_prefix + ".csv", findings)
-    report.save_markdown(out_prefix + ".md", findings, stats, shops, top=top)
+    keys = {(f.source, f.product_id) for f in findings}
+    groups = analyze.rank_products(analyze.group_findings(findings), store.popularity(day),
+                                   store.shop_prices(day, keys), strong=lambda f: report.level(f) >= 2)
+    report.save_markdown(out_prefix + ".md", findings, stats, shops, top=top, groups=groups)
     return findings, stats, shops
 
 
