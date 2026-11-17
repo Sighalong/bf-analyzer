@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS variant_products (
     source TEXT NOT NULL, product_id TEXT NOT NULL, since TEXT NOT NULL,
     PRIMARY KEY (source, product_id)
 );
+CREATE TABLE IF NOT EXISTS popularity (
+    source TEXT NOT NULL, product_id TEXT NOT NULL, category TEXT NOT NULL,
+    rank INTEGER NOT NULL, listed INTEGER NOT NULL, day TEXT NOT NULL,
+    PRIMARY KEY (source, product_id, category)
+);
 """
 
 
@@ -123,6 +128,49 @@ class Store(object):
             n = len(prices)
             out[k] = prices[n // 2] if n % 2 else (prices[n // 2 - 1] + prices[n // 2]) / 2.0
         return out
+
+    def save_ranks(self, source, category, product_ids, day):
+        """Remember where each product sat in the category listing (most popular first on both sites)."""
+        n = len(product_ids)
+        self.db.executemany("INSERT OR REPLACE INTO popularity VALUES (?,?,?,?,?,?)",
+                            [(source, pid, category, i, n, day) for i, pid in enumerate(product_ids, 1)])
+        self.db.commit()
+
+    def popularity(self, day):
+        """{(source, product_id): (shops in stock on `day`, best listing rank as 0..1 or None)}.
+
+        rank 1.0 = first in its category listing. Ranks older than 14 days are ignored.
+        """
+        out = {}
+        for source, pid, n in self.db.execute(
+                "SELECT source, product_id, COUNT(*) FROM prices WHERE day=? AND in_stock=1 AND shop NOT LIKE '(%' "
+                "GROUP BY source, product_id", (day,)):
+            out[(source, pid)] = (n, None)
+        for source, pid, rank, listed in self.db.execute(
+                "SELECT source, product_id, rank, listed FROM popularity WHERE day>=?", (_shift(day, -14),)):
+            r = 1 - (rank - 1) / float(max(listed, 1))
+            n, old = out.get((source, pid), (0, None))
+            out[(source, pid)] = (n, r if old is None else max(old, r))
+        return out
+
+    def shop_prices(self, day, keys):
+        """{(source, product_id): [(shop, price, original_price, in_stock)]} on `day` for the given products."""
+        want, out = set(keys), {}
+        for source, pid, shop, price, orig, stock in self.db.execute(
+                "SELECT source, product_id, shop, price, original_price, in_stock FROM prices "
+                "WHERE day=? AND shop NOT LIKE '(%' ORDER BY price", (day,)):
+            if (source, pid) in want:
+                out.setdefault((source, pid), []).append((shop, price, orig, stock))
+        return out
+
+    def set_meta(self, key, value):
+        self.db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, value))
+        self.db.commit()
+
+    def collected(self):
+        """{source: "YYYY-MM-DD HH:MM"} of the last collection that saved products."""
+        return {k[len("collected_"):]: v for k, v in self.db.execute(
+            "SELECT key, value FROM meta WHERE key LIKE 'collected\\_%' ESCAPE '\\'")}
 
     def shop_product_counts(self, day):
         """{(source, shop): number of products the shop listed in stock on `day`}."""

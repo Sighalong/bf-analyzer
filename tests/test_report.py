@@ -93,27 +93,47 @@ class Outputs(unittest.TestCase):
         self.assertIn("Henter …", page)
         self.assertNotIn("id='fcat'", page)          # no filters without findings
 
-    def test_html_sections_filters_and_story(self):
-        fs = [finding(), finding(rule="deal", score=0.1, now=900.0, category="mobil", shop="Ærlig"),
-              finding(rule="before_price", claimed=1500.0, low30=1000.0, base_median=None, peak=None)]
+    def test_html_one_card_per_product_and_story(self):
+        fs = [finding(), finding(rule="before_price", claimed=1500.0, low30=1000.0, base_median=None, peak=None),
+              finding(rule="deal", score=0.1, now=900.0, product_id="2", title="Mobil X", category="mobil",
+                      shop="Ærlig")]
         page = report.html_page(fs, STATS, ["bfa_report.csv"], False, shops=[shop_row()])
         self.assertIn("2 mistenkelige tilbud</b> hos 1 butikker", page)
-        self.assertIn("<option value='mobil'>Mobil</option>", page)
-        self.assertLess(page.index("data-rule='fake_discount'><h2>Lurepris"), page.index("data-rule='before_price'"))
+        self.assertEqual(page.count("<article class='card"), 2)            # one card per product
+        self.assertIn("data-rules=' before_price fake_discount '", page)   # both findings on the TV card
+        self.assertIn("<button type='button' class='cat' data-cat='mobil' aria-pressed='false'>Mobil <b>1</b>", page)
+        self.assertIn("aria-pressed='true'>Alle <b>2</b>", page)
         self.assertIn("Var vanligvis 1\u00a0000\u00a0kr. Hevet til 1\u00a0300\u00a0kr 5. nov (22 dager før Black "
                       "Friday), nå «tilbud» 1\u00a0000\u00a0kr.", page)   # amounts never wrap mid-number
-        self.assertIn("<p class='st'>Satt opp 5. nov (22 dager før Black Friday).</p>", page)   # card: only the when
         self.assertIn("Black Friday 27. nov</b> · i dag", page)
         self.assertIn("Det er Black Week", page)
-        self.assertIn("Oppgir før-pris 1\u00a0500\u00a0kr", page)
-        self.assertIn("normalpris målt før 1. okt", page)
-        self.assertIn("<b>Satt opp i pris:</b> ingen funnet.", page)
-        # overview chips: one per type with its count, in the dashboard's order
-        self.assertIn("href='#t-fake_discount' data-open='fake_discount' role='tab'><b>1</b> Lurepris</a>", page)
-        self.assertIn("class='chip warn zero' href='#t-hike'", page)
+        self.assertIn("<span class='lab bad'>Lurepris</span>", page)       # the % is in the badge, not repeated
+        self.assertIn("<span class='open'>Kontroller</span></summary>", page)
+        self.assertIn("<button type='button' data-type='bad' aria-pressed='false'>Lureri</button>", page)
+        self.assertIn("[hidden]{display:none!important}", page)        # cards hidden by the filters really hide
+        self.assertIn("Butikken oppgir før-pris 1\u00a0500\u00a0kr", page)          # check section, before-price
+        self.assertIn("Normalpris 1\u00a0000\u00a0kr = median for Butikk 2. aug–30. sep", page)
+        self.assertIn("<b>Prisendringer:</b> 1. nov 1\u00a0000\u00a0kr → 5. nov 1\u00a0300\u00a0kr", page)
         self.assertIn("<span class='cap'>hevet før «tilbudet»</span>", page)     # badge says what the % is
-        self.assertIn("Kriterium: Minst 10\u00a0% over normalpris i minst 2 dager", page)
+        self.assertIn("Topp 5 lureri", page)
         self.assertIn("href='files/bfa_report.csv'", page)   # relative, so it works under BASE_PATH
+
+    def test_card_lists_every_shop_and_filters_on_all(self):
+        fs = [finding(rule="deal", score=0.3, now=700.0, shop=s) for s in ("A", "B")]
+        prices = {("prisjakt", "1"): [("A", 700.0, None, 1), ("B", 700.0, None, 1), ("C", 990.0, None, 1),
+                                      ("D", 650.0, None, 0), ("Telenor", 1.0, None, 1)]}
+        page = report.html_page(fs, STATS, [], False, prices=prices, collected={"prisjakt": "2026-11-27 06:40"})
+        self.assertIn("data-shops='|A|B|C|D|'", page)          # operator plan price left out
+        self.assertIn("Billigst nå <b>700\u00a0kr</b> hos A · 3 butikker", page)   # sold-out D not cheapest
+        self.assertIn("<tr class='quiet'><td>C</td>", page)    # shop without a finding, greyed
+        self.assertIn("D</td><td class='num'>650 kr <small>(utsolgt)</small>", page)
+        self.assertIn("Hentet fra Prisjakt 27. nov kl. 06:40.", page)
+        self.assertIn("<span class='lab good'>Ekte prisfall <small>· 2 butikker</small></span>", page)
+
+    def test_price_steps(self):
+        pts = [("d1", 10.0), ("d2", 10.0), ("d3", 12.0), ("d4", 12.4), ("d5", 9.0)]
+        self.assertEqual(report.price_steps(pts), [("d1", 10.0), ("d3", 12.0), ("d5", 9.0)])
+        self.assertEqual(len(report.price_steps([("d%02d" % i, float(i)) for i in range(30)])), 10)
 
     def test_levels_per_type(self):
         self.assertEqual([report.level(finding(rule="hike", score=s)) for s in (0.12, 0.2, 0.39, 0.4, 0.9)],
@@ -136,15 +156,14 @@ class Outputs(unittest.TestCase):
         self.assertIn("flagget siden 21. nov", page)
         self.assertIn("<b>Siden 26. nov:</b> +1 nye · 1 borte", page)
         self.assertIn("Satt opp i pris: Borte &lt;b&gt;TV&lt;/b&gt;", page)
-        self.assertIn("<span class='nw'>+1 ny</span>", page)
         self.assertIn("class='lvl l3' title='Grad: Kraftig'", page)
-        for control in ("id='flvl'", "id='fsort'", "id='fnew'", "class='gbtn'"):
+        for control in ("id='flvl'", "id='fsort'", "id='fnew'", "id='ftype'", "id='fq'", "id='fcat'"):
             self.assertIn(control, page)
 
     def test_html_first_report_marks_nothing_new(self):
         flags = {"since": "2026-11-27", "prev": None, "first": {}, "gone": []}
         page = report.html_page([finding()], STATS, [], False, flags=flags)
-        self.assertNotIn("class='card fake_discount new'", page)
+        self.assertNotIn("class='card bad new'", page)
         self.assertIn("Nye funn merkes fra neste innsamling.", page)
         self.assertNotIn("Siden ", report.html_page([finding()], STATS, [], False))   # no tracking yet: no line
 
@@ -155,11 +174,8 @@ class Outputs(unittest.TestCase):
         self.assertIn("Black Friday 27. nov</b> · om 40 dager", page)
         self.assertIn("Nå er det oppkjøring", page)
         self.assertIn("class='verdict warn'><b>1 priser er satt opp før Black Friday</b>", page)
-        self.assertIn("<b>1</b> Lurepris</a>", page)
-        self.assertIn("<b>1</b> Ekte prisfall</a>", page)
         self.assertNotIn("mistenkelige tilbud</b>", page)
-        self.assertIn("data-rule='hike'><h2>Satt opp i pris", page)
-        self.assertLess(page.index("data-rule='hike'"), page.index("data-rule='deal'"))
+        self.assertLess(page.index("<b>Satt opp i pris</b>"), page.index("<b>Ekte prisfall</b>"))   # how-to order
 
     def test_html_off_season_has_countdown_only(self):
         page = report.html_page([], dict(STATS, last_day="2027-03-01"), [], False)

@@ -157,5 +157,10 @@ def oslo_day(iso_utc):
 
 
 def today_oslo():
+    return now_oslo()[:10]
+
+
+def now_oslo():
+    """'2026-11-17 06:40' in Norwegian local time."""
     now = datetime.now(timezone.utc)
-    return (now + oslo_offset(now)).strftime("%Y-%m-%d")
+    return (now + oslo_offset(now)).strftime("%Y-%m-%d %H:%M")

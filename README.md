@@ -137,22 +137,38 @@ så er den plutselig «BF-tilbud» til 10 000 kr. Det er ingen reell rabatt (pri
 tilbake der den alltid var), og den flagges som **lurepris**.
 
 **Tidslinje:** øverst viser nettsiden en nedtelling til Black Friday og hvor i sesongen vi er.
-Før Black Week (mandag før Black Friday til Cyber Monday) står **Satt opp i pris** først, fordi
-det er da en lurepris forberedes. Under og etter Black Week står **Lurepris** først. Under
-tidslinjen viser en rad med knapper hvor mange funn det er av hver type; trykk for å gå dit. Hvert funn sier hvor mange dager før Black Friday prisen ble hevet.
+Før Black Week (mandag før Black Friday til Cyber Monday) handler oppsummeringen om **Satt opp i pris**,
+fordi det er da en lurepris forberedes. Under og etter Black Week handler den om **Lurepris**. Hvert funn sier
+hvor mange dager før Black Friday prisen ble hevet.
+
+**Finn et produkt:** søkefeltet øverst søker i produktnavn, kategori og butikker, og kategoriknappene under
+(med antall produkter) viser én kategori om gangen. Valgt kategori står i adressen, så en lenke viser det samme.
+Hvert produkt er **ett kort**, også når flere butikker har funn på det: kortet viser hvilke typer funn det har,
+billigste pris i dag og hvor mange butikker som selger det. Filtrene over listen velger type (lureri eller gode
+kjøp), grad og bare nye, og listen kan sorteres etter størst avvik, popularitet, nyeste, kategori eller kroner.
+
+**Kontroller et funn:** «Kontroller» på kortet viser alle butikkenes pris i dag (butikker uten funn i grått),
+hva funnet er målt mot i klartekst (normalpris, hvilken periode og hvor mange dager med priser), grafen med
+snittet for alle butikkene som prikket linje, datoene prisen endret seg, og når prisene ble hentet. Trykk på en
+butikk med funn for å se dens grunnlag. Sammenlign med produktsiden på Prisjakt eller Klarna via lenken.
+
+**Topp 5 lureri og topp 5 beste kjøp** står øverst og følger søk og kategori. De rangeres etter hvor stort
+avviket er, hvor populær varen er (antall butikker som selger den i dag og plassering i kategorilisten på
+Prisjakt/Klarna, der de mest populære står først) og hvor mange butikker som gjør det samme. Lurepris teller
+mest, så oppblåst før-pris og prishopp. Hopp over 100 % teller mindre, fordi de oftere er feil i dataene. Et
+beste kjøp må være billigst i dag, på lager og minst 10 % under vanlig lavpris, og teller mindre med under 30
+dager prishistorikk eller når en annen butikk har et lureri-funn på samme vare.
 
 **Nye funn og grad:** hver innsamling husker når et funn ble flagget første gang (tabellen `flags`
 i databasen). Nettsiden merker funn som er nye i siste innsamling med **NY**, viser «Siden 25. okt: +3 nye ·
 2 borte» øverst og har filteret «Bare nye». Hver enhet husker også når du sist var inne, og merker funn som
 har kommet siden med «Ny siden sist» (lagres bare i nettleseren). **Grad** (Litt, Tydelig, Kraftig) sier hvor
 stort avviket er innenfor typen: for prishopp og lurepris er det tydelig fra 20 % og kraftig fra 40 %, for
-oppblåst før-pris fra 10 % og 25 %, og for ekte prisfall fra 10 % og 20 %. Listene kan sorteres etter grad,
-nyeste eller kronebeløp, og grafen åpnes med «Vis graf» på mobil.
+oppblåst før-pris fra 10 % og 25 %, og for ekte prisfall fra 10 % og 20 %. Grad kan brukes som filter.
 
 **Butikkrangering:** rapporten viser også hvilke butikker som har flest flaggede
-produkter, som andel av produktene de selger blant dem vi følger. Webgrensesnittet
-viser en liten prisgraf per funn: normalpris (stiplet), topp (oransje) og nå (grønn),
-så du raskt kan se om flagget holder.
+produkter, som andel av produktene de selger blant dem vi følger. Trykk på en butikk for å vise bare
+dens produkter.
 
 Prisjakts egen 3-måneders historikk («billigst blant alle butikker») går tilbake til
 juli og gir treff fra dag én. Flaggene per butikk krever at Pi-en samler daglig. Starter
